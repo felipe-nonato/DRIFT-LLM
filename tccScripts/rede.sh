@@ -5,6 +5,7 @@
 #
 #   ./rede.sh                 # http://127.0.0.1:8090
 #   PORTA=8091 ./rede.sh
+#   CACHE=/mnt/windows/drift-cache ./rede.sh   # pesos do modelo num disco de verdade (live USB)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -20,6 +21,26 @@ fi
 if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
   echo "i   Firewall ufw ativo: as portas 5000/tcp (telemetria) e 31337/tcp (P2P) precisam estar liberadas:"
   echo "      sudo ufw allow 5000/tcp && sudo ufw allow 31337/tcp"
+fi
+
+# Onde ficam os pesos do modelo (~15 GiB em bfloat16). Num live USB a "home" fica num overlay
+# em RAM: baixar os pesos lá consome a própria RAM dos blocos e o espaço acaba no meio do download.
+if [ -n "${CACHE:-}" ]; then
+  mkdir -p "${CACHE}/drift" "${CACHE}/huggingface"
+  export DRIFT_CACHE="${CACHE}/drift" HF_HOME="${CACHE}/huggingface"
+  echo "i   Cache do modelo em ${CACHE} (DRIFT_CACHE e HF_HOME)"
+fi
+DIR_CACHE="${DRIFT_CACHE:-${HOME}/.cache/drift}"
+mkdir -p "${DIR_CACHE}"
+FS_CACHE=$(df --output=fstype "${DIR_CACHE}" | tail -1 | tr -d ' ')
+LIVRE_GIB=$(( $(df --output=avail -k "${DIR_CACHE}" | tail -1) / 1024 / 1024 ))
+if [ "${FS_CACHE}" = "overlay" ] || [ "${FS_CACHE}" = "tmpfs" ]; then
+  echo "!!  O cache do modelo (${DIR_CACHE}) está em ${FS_CACHE}, ou seja, na RAM (sistema live?)."
+  echo "    Os pesos ocupariam a RAM que os blocos precisam e o espaço acaba no download."
+  echo "    Monte um disco (partição do Windows, HD externo) e rode:  CACHE=/ponto/de/montagem/drift-cache ./rede.sh"
+fi
+if [ "${LIVRE_GIB}" -lt 16 ]; then
+  echo "!!  Só ${LIVRE_GIB} GiB livres em ${DIR_CACHE}; o modelo completo precisa de ~16 GiB."
 fi
 
 PORTA="${PORTA:-8090}"
