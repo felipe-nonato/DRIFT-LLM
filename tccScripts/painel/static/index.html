@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bancada P2P</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/estilo.css">
+</head>
+<body>
+<main class="shell">
+  <header>
+    <div>
+      <div class="kicker">P2P × centralizado / bancada de medição</div>
+      <h1>Controle do experimento</h1>
+    </div>
+    <p class="lede" id="resumoConfig">Carregando configuração…</p>
+  </header>
+
+  <section class="grid">
+    <!-- Máquinas -->
+    <article class="panel span-12">
+      <div class="titulo-linha">
+        <div><h2>Máquinas</h2><p class="sub">Estado dos agentes e dos processos em cada máquina do inventário.</p></div>
+        <button class="ghost" id="btnSpecs">Validar specs</button>
+      </div>
+      <div class="maquinas" id="maquinas"></div>
+    </article>
+
+    <!-- Experimento -->
+    <article class="panel span-5">
+      <h2>Experimento</h2>
+      <p class="sub">Os dois cenários usam os mesmos parâmetros. O protocolo é executado passo a passo.</p>
+      <form id="formExp" autocomplete="off">
+        <label for="experimento">Rótulo do experimento</label>
+        <input id="experimento" name="experimento" value="exp01" required pattern="[A-Za-z0-9_.\-]{1,64}">
+        <div class="row">
+          <div><label for="torch_dtype">Precisão</label>
+            <select id="torch_dtype" name="torch_dtype"><option>bfloat16</option><option>float32</option><option>float16</option></select></div>
+          <div><label for="repeticoes">Repetições</label><input id="repeticoes" name="repeticoes" type="number" min="1" max="50" value="3"></div>
+        </div>
+        <div class="row">
+          <div><label for="max_new_tokens">Máx. tokens</label><input id="max_new_tokens" name="max_new_tokens" type="number" min="1" max="4096" value="128"></div>
+          <div><label for="pausa_s">Pausa (s)</label><input id="pausa_s" name="pausa_s" type="number" min="0" max="600" value="15"></div>
+        </div>
+        <div class="row">
+          <div><label for="baseline_s">Linha de base (s)</label><input id="baseline_s" name="baseline_s" type="number" min="10" max="600" value="60"></div>
+          <div><label for="espera_blocos_s">Espera dos blocos (s)</label><input id="espera_blocos_s" name="espera_blocos_s" type="number" min="0" max="3600" value="120"></div>
+        </div>
+        <div class="row">
+          <div><label for="bootstrap">Bootstrap</label><select id="bootstrap" name="bootstrap"></select></div>
+          <div><label for="cliente">Cliente P2P</label><select id="cliente" name="cliente"></select></div>
+        </div>
+        <label for="central">Máquina do centralizado</label><select id="central" name="central"></select>
+        <div class="acoes">
+          <button type="button" class="primary" id="btnP2P">Executar P2P</button>
+          <button type="button" class="secondary" id="btnCentral">Executar centralizado</button>
+        </div>
+        <div class="acoes">
+          <button type="button" class="ghost" id="btnCancelar">Cancelar</button>
+          <button type="button" class="danger" id="btnPararTudo">Parar tudo</button>
+        </div>
+      </form>
+      <div class="aviso" id="avisoForm" role="alert" hidden></div>
+    </article>
+
+    <!-- Protocolo -->
+    <article class="panel span-7">
+      <div class="titulo-linha">
+        <div><h2>Protocolo</h2><p class="sub" id="estadoExp">Nenhum experimento em execução.</p></div>
+        <span class="selo" id="seloExp">ocioso</span>
+      </div>
+      <ol class="passos" id="passos"></ol>
+      <label>Endereço do bootstrap (publicado pelo nó)</label>
+      <div class="code" id="multiaddr">—</div>
+      <button class="ghost pequeno" id="btnCopiar" type="button">Copiar endereço</button>
+    </article>
+
+    <!-- Resultados -->
+    <article class="panel span-12">
+      <div class="titulo-linha">
+        <div><h2>Resultados</h2><p class="sub">Calculados pela API de telemetria com os parâmetros de config_tcc.json (média ± desvio, consultas válidas).</p></div>
+        <form class="inline" id="formRel"><input id="expRel" placeholder="experimento" aria-label="Experimento a exibir"><button class="ghost" type="submit">Exibir</button></form>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Indicador</th><th>Centralizado (A)</th><th>P2P (B)</th><th>B − A</th></tr></thead>
+        <tbody id="comparativo"><tr><td colspan="4">Sem dados.</td></tr></tbody>
+      </table></div>
+      <h3>Consultas</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>#</th><th>Cenário</th><th>Prompt</th><th>Rep.</th><th>Tokens</th><th>Duração</th><th>tok/s</th><th>Wh</th><th>gCO₂</th><th>Máquinas</th><th>Válida</th></tr></thead>
+        <tbody id="consultas"><tr><td colspan="11">Nenhuma consulta registrada.</td></tr></tbody>
+      </table></div>
+    </article>
+
+    <!-- Logs -->
+    <article class="panel span-12">
+      <div class="titulo-linha">
+        <div><h2>Logs</h2><p class="sub">Saída dos processos, transmitida em tempo real.</p></div>
+        <select id="logSel" aria-label="Processo"></select>
+      </div>
+      <pre class="logs" id="logs"></pre>
+    </article>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

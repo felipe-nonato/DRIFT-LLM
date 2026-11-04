@@ -1,0 +1,64 @@
+{
+  "_comentario": "Parâmetros metodológicos. Lidos pela API a CADA cálculo: alterar um valor aqui recalcula todos os resultados sem refazer experimentos. Todo parâmetro exige 'valor' e 'fonte'; fonte contendo 'PREENCHER' bloqueia o cálculo se o parâmetro estiver em uso.",
+
+  "amostragem": {
+    "intervalo_s": 1.0,
+    "lote_envio_s": 5.0,
+    "baseline_s": 60,
+    "cobertura_minima": 0.95
+  },
+
+  "contabilizacao": {
+    "base_energia": "bruta",
+    "_opcoes": "'bruta' = toda a energia CPU+RAM das máquinas durante a consulta (atribucional; não favorece o P2P). 'marginal' = bruta menos a linha de base ociosa de cada máquina (premissa de 'máquinas já ligadas', Sharifi et al., 2014). A API sempre devolve as duas; esta chave escolhe a principal."
+  },
+
+  "parametros": {
+    "cif_g_por_wh": {
+      "valor": 0.0973,
+      "fonte": "MCTI/SIRENE — fator de emissão da margem de operação do SIN, jan.–abr. 2025: 0,0973 tCO2/MWh (= 0,0973 gCO2/Wh). CONFERIR o valor e o período usados no texto."
+    },
+    "ram_w_por_gb": {
+      "valor": 0.375,
+      "fonte": "Crucial — 3 W por 8 GB de DDR3/DDR4 (heurística também usada pelo CodeCarbon até a v2). Usado apenas quando o RAPL não expõe o domínio 'dram'."
+    },
+    "fracao_ociosa_cpu": {
+      "valor": 0.10,
+      "fonte": "Premissa: potência ociosa = 10% do TDP (mesmo piso do CodeCarbon, modo machine). Modelo linear P = TDP·(f + (1−f)·u), cf. Fan, Weber e Barroso (2007). SUBSTITUIR pelo valor medido com 'python specs.py --calibrar' em um nó com RAPL."
+    },
+    "k_rede_kwh_por_gb": {
+      "valor": 0.06,
+      "fonte": "Aslan et al. (2018), Journal of Industrial Ecology — 0,06 kWh/GB para transmissão na Internet, ano-base 2015. Tende a SUPERESTIMAR em 2026 (a intensidade cai ~50% a cada 2 anos), ou seja, é desfavorável ao P2P."
+    },
+    "ewif_l_por_kwh": {
+      "valor": 18.0,
+      "usar": false,
+      "fonte": "PREENCHER — fator de água indireta (evaporação na geração) da matriz brasileira. Se usar, vale para os DOIS cenários."
+    }
+  },
+
+  "cenarios": {
+    "p2p": {
+      "pue": {
+        "valor": 1.0,
+        "fonte": "Premissa: nós residenciais sem infraestrutura predial dedicada (otimista para o P2P; declarar como limitação)."
+      },
+      "wue_l_por_kwh": {
+        "valor": 0.0,
+        "fonte": "Premissa: resfriamento a ar sem consumo direto de água (otimista para o P2P; declarar como limitação)."
+      },
+      "contar_rede": true
+    },
+    "centralizado": {
+      "pue": {
+        "valor": 1.56,
+        "fonte": "Uptime Institute, Global Data Center Survey 2024 — PUE médio anual 1,56. CONFERIR."
+      },
+      "wue_l_por_kwh": {
+        "valor": 1.8,
+        "fonte": "Shehabi et al. (LBNL, 2016), United States Data Center Energy Usage Report — WUE médio de ~1,8 L/kWh. CONFERIR ou trocar pela fonte que o grupo adotar."
+      },
+      "contar_rede": false
+    }
+  }
+}

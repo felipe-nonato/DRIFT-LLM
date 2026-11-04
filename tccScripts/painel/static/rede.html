@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rede P2P</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/estilo.css">
+<style>
+  .modos { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .modo { text-align: left; padding: 22px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); color: var(--ink); }
+  .modo h2 { margin: 0 0 6px; font-size: 21px; } .modo p { margin: 0; color: var(--muted); font: 400 14px/1.45 var(--sans); }
+  .id-box { display: flex; gap: 10px; align-items: stretch; }
+  .id-box .code { flex: 1; font-size: 13px; display: flex; align-items: center; }
+  .id-grande { font-size: 15px; }
+  .colar { font-size: 15px; padding: 16px; }
+  .ok-msg { color: var(--green); font: 500 13px var(--mono); margin-top: 10px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .kpi { border: 1px solid var(--line); border-radius: 6px; padding: 12px; background: #fbfaf4; }
+  .kpi small { display: block; font: 500 11px var(--mono); color: var(--muted); text-transform: uppercase; }
+  .kpi b { display: block; font: 600 22px var(--sans); margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .kpi span { font: 11px var(--mono); color: var(--muted); }
+  .abas { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .abas button.ativa { background: var(--green); color: #fff; }
+  @media (max-width: 900px) { .modos { grid-template-columns: 1fr; } .id-box { flex-direction: column; } }
+</style>
+</head>
+<body>
+<main class="shell">
+  <header>
+    <div>
+      <div class="kicker">P2P × centralizado / bancada de medição</div>
+      <h1>Rede P2P</h1>
+    </div>
+    <p class="lede" id="lede">Este PC: carregando…</p>
+  </header>
+
+  <!-- Escolha do modo (só aparece quando nada está rodando) -->
+  <section class="modos" id="escolha" hidden>
+    <button class="modo" id="btnModoCentral" type="button">
+      <h2>Criar a rede aqui</h2>
+      <p>Este PC vira o nó central: liga a telemetria e o primeiro servidor, e mostra o ID para os outros PCs.</p>
+    </button>
+    <button class="modo" id="btnModoEntrar" type="button">
+      <h2>Entrar numa rede</h2>
+      <p>Cole o ID copiado do nó central. O resto é automático.</p>
+    </button>
+  </section>
+
+  <!-- Criar (central) -->
+  <section class="grid" id="formCentral" hidden>
+    <article class="panel span-12">
+      <h2>Criar a rede neste PC</h2>
+      <p class="sub">Os outros PCs precisam alcançar o IP escolhido: rede local para PCs no mesmo roteador, Tailscale para PCs em qualquer lugar.</p>
+      <form id="fCentral" autocomplete="off">
+        <div class="row">
+          <div><label for="cInterface">Rede</label><select id="cInterface"></select></div>
+          <div><label for="cExperimento">Nome do experimento</label>
+            <input id="cExperimento" value="exp01" required pattern="[A-Za-z0-9_.\-]{1,64}"></div>
+        </div>
+        <details>
+          <summary class="sub" style="cursor:pointer;margin-top:12px">Avançado</summary>
+          <div class="row">
+            <div><label for="cBlocos">Blocos neste PC</label><input id="cBlocos" type="number" min="1" max="200"></div>
+            <div><label for="cDtype">Precisão</label>
+              <select id="cDtype"><option>bfloat16</option><option>float32</option><option>float16</option></select></div>
+          </div>
+          <label><input type="checkbox" id="cSemRapl" style="width:auto"> sem RAPL (estimar energia pela utilização)</label>
+        </details>
+        <div class="acoes">
+          <button class="primary" type="submit" id="btnCriar">Criar rede</button>
+          <button class="ghost" type="button" data-voltar>Voltar</button>
+        </div>
+      </form>
+      <div class="aviso" id="erroCentral" hidden></div>
+    </article>
+  </section>
+
+  <!-- Entrar -->
+  <section class="grid" id="formEntrar" hidden>
+    <article class="panel span-12">
+      <h2>Entrar numa rede</h2>
+      <p class="sub">Cole o ID que aparece na página do nó central (botão “Copiar ID”). A conexão começa sozinha.</p>
+      <form id="fEntrar" autocomplete="off">
+        <label for="eId">ID da rede</label>
+        <input id="eId" class="colar" required placeholder="/ip4/192.168.3.4/tcp/31337/p2p/Qm…">
+        <details>
+          <summary class="sub" style="cursor:pointer;margin-top:12px">Avançado</summary>
+          <label><input type="checkbox" id="eSemRapl" style="width:auto"> sem RAPL (estimar energia pela utilização)</label>
+        </details>
+        <div class="acoes">
+          <button class="primary" type="submit" id="btnEntrar">Conectar</button>
+          <button class="ghost" type="button" data-voltar>Voltar</button>
+        </div>
+      </form>
+      <div class="aviso" id="erroEntrar" hidden></div>
+    </article>
+  </section>
+
+  <!-- Rede ativa -->
+  <section class="grid" id="ativo" hidden>
+    <article class="panel span-12">
+      <div class="titulo-linha">
+        <div><h2 id="tituloAtivo">Rede</h2><p class="sub" id="subAtivo"></p></div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="selo" id="seloServidor">—</span>
+          <button class="danger" id="btnDesligar" type="button">Desligar este PC</button>
+        </div>
+      </div>
+      <label>ID da rede (cole na página dos outros PCs)</label>
+      <div class="id-box">
+        <div class="code id-grande" id="idRede">Aguardando o nó anunciar o ID… (linha de base de ~1 min + carregamento dos blocos)</div>
+        <button class="secondary" id="btnCopiar" type="button" disabled>Copiar ID</button>
+      </div>
+      <div class="ok-msg" id="copiado" hidden>ID copiado.</div>
+    </article>
+
+    <article class="panel span-7">
+      <div class="titulo-linha">
+        <div><h2>PCs na rede</h2><p class="sub" id="cobertura">—</p></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Nó</th><th>Papel</th><th>IP</th><th>CPU</th><th class="num">RAM</th><th class="num">Blocos</th><th>Energia</th></tr></thead>
+          <tbody id="membros"><tr><td colspan="7">—</td></tr></tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="panel span-5">
+      <h2>Consultas</h2>
+      <p class="sub">Roda os prompts de <code>config/prompts.json</code> pelo enxame e mede cada consulta em todos os PCs. Requer que os PCs somem todos os blocos do modelo.</p>
+      <div class="row">
+        <div><label for="qRep">Repetições</label><input id="qRep" type="number" min="1" max="50" value="3"></div>
+        <div><label for="qTokens">Tokens por resposta</label><input id="qTokens" type="number" min="1" max="2048" value="128"></div>
+      </div>
+      <div class="acoes">
+        <button class="primary" id="btnConsultas" type="button">Rodar consultas</button>
+        <button class="ghost" id="btnPararConsultas" type="button" disabled>Parar</button>
+      </div>
+      <p class="sub" style="margin-top:12px" id="estadoCliente">Cliente parado.</p>
+      <div class="aviso" id="erroConsultas" hidden></div>
+    </article>
+
+    <article class="panel span-12">
+      <div class="titulo-linha">
+        <div><h2>Consumo</h2><p class="sub" id="subResultados">Média por consulta válida, calculada pela telemetria com os parâmetros de config_tcc.json.</p></div>
+        <a class="ghost pequeno" id="linkCsv" href="/api/relatorio.csv" style="text-decoration:none;border-radius:5px;padding:9px 12px;border:1px solid var(--line);color:var(--green)">Baixar CSV</a>
+      </div>
+      <div class="abas" id="abasCenario"></div>
+      <div class="kpis" id="kpis"><p class="sub">Sem consultas ainda. Clique em “Rodar consultas” quando todos os PCs estiverem servindo.</p></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>Cenário</th><th>Prompt</th><th>Rep.</th><th class="num">Tokens</th><th class="num">Duração (s)</th><th class="num">tok/s</th><th class="num">Wh</th><th class="num">gCO₂</th><th class="num">Água (mL)</th><th class="num">PCs</th><th>Válida</th></tr></thead>
+          <tbody id="consultas"></tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="panel span-12">
+      <div class="titulo-linha">
+        <div><h2>Log</h2><p class="sub">Saída dos processos deste PC.</p></div>
+        <div class="abas" id="abasLog"></div>
+      </div>
+      <pre class="logs" id="logs"></pre>
+    </article>
+  </section>
+</main>
+<script src="/static/rede.js"></script>
+</body>
+</html>

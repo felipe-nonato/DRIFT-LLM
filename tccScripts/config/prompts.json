@@ -1,0 +1,25 @@
+{
+  "_comentario": "Carga de trabalho padrão, idêntica nos dois cenários. Cada prompt é repetido --repeticoes vezes.",
+  "prompts": [
+    {
+      "id": "p1_colonialismo",
+      "texto": "A infraestrutura de Inteligência Artificial demanda grandes quantidades de energia e água, especialmente quando concentrada no Norte Global, em locais com matrizes elétricas poluentes. No Brasil, embora a energia seja majoritariamente renovável, a dependência de infraestruturas externas levanta preocupações sobre soberania tecnológica e colonialismo digital. Resuma em um único parágrafo o que é colonialismo digital e o impacto ambiental da centralização da IA."
+    },
+    {
+      "id": "p2_explicacao",
+      "texto": "Explique, em linguagem simples, como funciona uma rede peer-to-peer e cite duas vantagens e duas desvantagens em relação a um servidor central."
+    },
+    {
+      "id": "p3_codigo",
+      "texto": "Escreva uma função em Python que receba uma lista de números e retorne a média, a mediana e o desvio padrão, sem usar bibliotecas externas."
+    },
+    {
+      "id": "p4_curto",
+      "texto": "Qual é a capital da Paraíba? Responda em uma frase."
+    },
+    {
+      "id": "p5_raciocinio",
+      "texto": "Um data center consome 2 MWh por dia e tem PUE de 1,5. Quanta energia é gasta com equipamentos de TI e quanta com infraestrutura? Mostre o cálculo passo a passo."
+    }
+  ]
+}

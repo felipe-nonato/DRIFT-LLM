@@ -1,0 +1,16 @@
+# Todas as máquinas (agente, medição e API de telemetria)
+psutil>=5.9
+requests>=2.31
+
+# Máquinas que executam o modelo (servidores, cliente e centralizado)
+# versões exigidas pelo Drift LLM (pyproject do DRIFT-LLM): torch 2.6.x e transformers 5.13.x
+torch>=2.6,<2.7
+transformers>=5.13,<5.14
+# Drift LLM: instalado pelo ./instalar.sh (DRIFT_FONTE), padrão:
+# pip install git+https://github.com/felipe-nonato/DRIFT-LLM
+
+# Opcional: base de TDP de referência (apenas o CSV é lido, sem importar o pacote)
+codecarbon>=2.3
+
+# Análise dos resultados (analise/carga_pandas.py)
+pandas>=2.2

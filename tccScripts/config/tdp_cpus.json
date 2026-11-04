@@ -1,0 +1,20 @@
+{
+  "_comentario": "Tabela curada de TDP das CPUs do experimento. Tem prioridade sobre a base do CodeCarbon. Toda entrada precisa de fonte (ficha do fabricante). Atenção: em CPUs móveis com cTDP, o fabricante do notebook pode configurar outro valor.",
+  "cpus": [
+    {
+      "modelo": "Intel(R) Core(TM) i5-7200U CPU @ 2.50GHz",
+      "tdp_w": 15,
+      "fonte": "Intel ARK — Intel Core i5-7200U, TDP 15 W (cTDP down 7,5 W) — https://www.intel.com/content/www/us/en/products/sku/95443/intel-core-i57200u-processor-3m-cache-up-to-3-10-ghz/specifications.html"
+    },
+    {
+      "modelo": "AMD A8-7650K Radeon R7, 10 Compute Cores 4C+6G",
+      "tdp_w": 95,
+      "fonte": "AMD — A8-7650K, TDP padrão 95 W (configurável 65 W) — https://www.amd.com/en/support/downloads/drivers.html/processors/a-series/a8-series-apu-for-desktops/a8-7650k-with-radeon-r7-series.html"
+    },
+    {
+      "modelo": "AMD Ryzen 5 5500U with Radeon Graphics",
+      "tdp_w": 15,
+      "fonte": "AMD — Ryzen 5 5500U, TDP padrão 15 W (cTDP 10–25 W) — https://www.amd.com/en/products/processors/laptop/ryzen/5000-series/amd-ryzen-5-5500u.html"
+    }
+  ]
+}

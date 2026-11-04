@@ -1,0 +1,15 @@
+{
+  "_comentario": "Inventário do experimento. 'agente' é a URL do painel.agente em cada máquina. Servidores precisam de num_blocks e devem somar ao menos 'camadas'. Campos opcionais por máquina: tdp (W), sem_rapl (true/false), interface. IPs obtidos do banco de telemetria; o da máquina 'central' precisa ser preenchido.",
+  "modelo": { "nome": "Qwen/Qwen2.5-7B-Instruct", "camadas": 28 },
+  "telemetria": { "maquina": "no1", "porta": 5000 },
+  "maquinas": [
+    { "nome": "no1", "agente": "http://100.78.50.45:7000", "interface": "tailscale0",
+      "papeis": ["telemetria", "servidor", "cliente"], "num_blocks": 10 },
+    { "nome": "no2", "agente": "http://100.104.252.125:7000", "interface": "tailscale0",
+      "papeis": ["servidor"], "num_blocks": 10 },
+    { "nome": "no3", "agente": "http://100.69.212.75:7000", "interface": "tailscale0",
+      "papeis": ["servidor"], "num_blocks": 8 },
+    { "nome": "central", "agente": "http://IP_DA_MAQUINA_CENTRAL:7000", "interface": "tailscale0",
+      "papeis": ["centralizado"] }
+  ]
+}
