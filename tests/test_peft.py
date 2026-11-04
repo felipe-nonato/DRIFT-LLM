@@ -1,0 +1,71 @@
+import os
+import shutil
+
+import pytest
+from huggingface_hub import snapshot_download
+
+from drift.utils.peft import check_peft_repository, load_peft
+
+UNSAFE_PEFT_REPO = "artek0chumak/bloom-560m-unsafe-peft"
+SAFE_PEFT_REPO = "artek0chumak/bloom-560m-safe-peft"
+TMP_CACHE_DIR = "tmp_cache/"
+
+# These tests only use fork for isolation; the code under test is platform-neutral. pytest-forked's
+# runtest hook calls os.fork() before skip marks are evaluated and INTERNALERRORs the whole session
+# on Windows, so fall back to running in-process there instead of marking.
+forked_for_isolation = pytest.mark.forked if hasattr(os, "fork") else (lambda f: f)
+
+
+def clear_dir(path_to_dir):
+    shutil.rmtree(path_to_dir)
+    os.mkdir(path_to_dir)
+
+
+def dir_empty(path_to_dir):
+    files = os.listdir(path_to_dir)
+    return len(files) == 0
+
+
+@forked_for_isolation
+def test_check_peft():
+    assert not check_peft_repository(UNSAFE_PEFT_REPO), "NOSAFE_PEFT_REPO is safe to load."
+    assert check_peft_repository(SAFE_PEFT_REPO), "SAFE_PEFT_REPO is not safe to load."
+
+
+@forked_for_isolation
+def test_load_noncached(tmpdir):
+    clear_dir(tmpdir)
+    with pytest.raises(Exception):
+        load_peft(UNSAFE_PEFT_REPO, cache_dir=tmpdir)
+
+    assert dir_empty(tmpdir), "UNSAFE_PEFT_REPO is loaded"
+
+    load_peft(SAFE_PEFT_REPO, cache_dir=tmpdir)
+
+    assert not dir_empty(tmpdir), "SAFE_PEFT_REPO is not loaded"
+
+
+@forked_for_isolation
+def test_load_cached(tmpdir):
+    clear_dir(tmpdir)
+    snapshot_download(SAFE_PEFT_REPO, cache_dir=tmpdir)
+
+    load_peft(SAFE_PEFT_REPO, cache_dir=tmpdir)
+
+
+@forked_for_isolation
+def test_load_layer_exists(tmpdir):
+    clear_dir(tmpdir)
+
+    load_peft(SAFE_PEFT_REPO, block_idx=2, cache_dir=tmpdir)
+
+
+@forked_for_isolation
+def test_load_layer_nonexists(tmpdir):
+    clear_dir(tmpdir)
+
+    load_peft(
+        SAFE_PEFT_REPO,
+        block_idx=1337,
+        cache_dir=tmpdir,
+    )

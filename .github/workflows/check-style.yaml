@@ -1,0 +1,30 @@
+name: Check style
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+# Style tools run as isolated, version-pinned actions rather than via the project's uv
+# env: black's multi-file `reformat_many` path calls `asyncio.get_event_loop()`, which
+# raises under the uvloop that hivemind pulls into the project venv. Running them isolated
+# avoids that and keeps the checks independent of the runtime dependency stack.
+jobs:
+  black:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: psf/black@stable
+        with:
+          options: "--check --diff"
+          version: "22.3.0"
+  isort:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: isort/isort-action@master
+        with:
+          isortVersion: "5.10.1"
