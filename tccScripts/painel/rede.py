@@ -147,6 +147,25 @@ def blocos_que_cabem(modelo, torch_dtype, reservar_cliente):
     return cap, por_bloco, camadas
 
 
+def blocos_pedidos(corpo, cap, camadas):
+    """Número de blocos escolhido à mão (None = automático) e se pode passar da capacidade calculada."""
+    bruto = corpo.get("num_blocks")
+    if bruto in (None, "", 0, "0"):
+        return None, False
+    try:
+        pedido = int(bruto)
+    except (TypeError, ValueError):
+        raise ErroHTTP(422, "Blocos neste PC: use um número inteiro (ou deixe vazio para automático).")
+    if not 1 <= pedido <= camadas:
+        raise ErroHTTP(422, f"Blocos neste PC: entre 1 e {camadas} (o modelo tem {camadas} camadas).")
+    forcar = bool(corpo.get("forcar_blocos"))
+    if pedido > cap["blocos"] and not forcar:
+        raise ErroHTTP(422, f"Você pediu {pedido} blocos, mas este PC comporta {blocos_mod.descrever(cap)}. "
+                            "Acima disso o sistema pagina os pesos do disco e o tempo/energia por token ficam "
+                            "inflados. Use um número menor ou marque “permitir acima da capacidade”.")
+    return pedido, forcar
+
+
 def _sem_capacidade(cap):
     return ErroHTTP(422, "A RAM disponível deste PC não comporta nenhum bloco do modelo. "
                          f"{blocos_mod.descrever(cap)}. Feche programas (navegador, IDE) e tente de novo.")
@@ -201,22 +220,21 @@ class Rede:
             raise ErroHTTP(409, "Já há processos rodando neste PC. Desligue antes de iniciar de novo.")
         try:
             previstas = int(corpo.get("maquinas_previstas") or 0)
-            pedido = int(corpo.get("num_blocks") or 0)
         except (TypeError, ValueError):
-            raise ErroHTTP(422, "Blocos e PCs previstos devem ser números inteiros.")
+            raise ErroHTTP(422, "PCs previstos deve ser um número inteiro.")
         if not 0 <= previstas <= 64:
             raise ErroHTTP(422, "PCs previstos: entre 1 e 64 (ou vazio).")
         # o cliente roda neste PC (botão "Rodar consultas"): a capacidade já reserva a memória dele
         cap, _, camadas = blocos_que_cabem(modelo, dtype, reservar_cliente=True)
-        if cap["blocos"] < 1:
+        pedido, forcar = blocos_pedidos(corpo, cap, camadas)
+        if pedido is None and cap["blocos"] < 1:
             raise _sem_capacidade(cap)
-        if pedido > cap["blocos"]:
-            raise ErroHTTP(422, f"Este PC comporta no máximo {blocos_mod.descrever(cap)}. "
-                                "Use um número menor ou deixe o campo vazio.")
-        num_blocks = blocos_mod.proximo_intervalo(camadas, [], pedido or cap["blocos"], previstas)[1]
+        # manual: exatamente o pedido (sem cota); automático: capacidade limitada à cota balanceada
+        num_blocks = pedido or blocos_mod.proximo_intervalo(camadas, [], cap["blocos"], previstas)[1]
         block_indices = f"0:{num_blocks}"
         plano = {"block_indices": block_indices, "capacidade": cap, "maquinas_previstas": previstas or None,
-                 "reserva_cliente": True, "pedido_manual": pedido or None}
+                 "reserva_cliente": True, "modo": "manual" if pedido else "automatico",
+                 "pedido_manual": pedido, "acima_da_capacidade": bool(pedido and pedido > cap["blocos"])}
 
         api = f"http://{ip}:{PORTA_TELEMETRIA}"
         if not telemetria_no_ar(f"http://127.0.0.1:{PORTA_TELEMETRIA}"):
@@ -290,7 +308,8 @@ class Rede:
         modelo = extras.get("modelo") or MODELO_PADRAO
         dtype = extras.get("torch_dtype") or DTYPE_PADRAO
         cap, _, camadas = blocos_que_cabem(modelo, dtype, reservar_cliente=False)
-        if cap["blocos"] < 1:
+        pedido, forcar = blocos_pedidos(corpo, cap, camadas)
+        if pedido is None and cap["blocos"] < 1:
             raise _sem_capacidade(cap)
 
         # próximo intervalo de camadas ainda não coberto pelos servidores já na rede
@@ -306,14 +325,27 @@ class Rede:
                                 "o Drift escolhe e rebalanceia os blocos deles, então não há como planejar este "
                                 "PC. Recrie a rede com a versão atual da página.")
         previstas = ((extras.get("plano_blocos") or {}).get("maquinas_previstas")) or None
-        intervalo = blocos_mod.proximo_intervalo(camadas, fixos, cap["blocos"], previstas)
+        if pedido:
+            livres = blocos_mod.lacunas(camadas, fixos)
+            if not livres:
+                raise ErroHTTP(409, f"A rede já cobre as {camadas} camadas do modelo: não há trecho livre para este PC.")
+            intervalo = blocos_mod.intervalo_manual(camadas, fixos, pedido)
+            if intervalo is None:
+                maior = max(b - a for a, b in livres)
+                raise ErroHTTP(409, f"Nenhum trecho livre comporta {pedido} blocos seguidos sem sobrepor outro "
+                                    f"servidor. Trechos livres: {', '.join(f'{a}:{b}' for a, b in livres)}. "
+                                    f"Peça no máximo {maior} ou deixe vazio para automático.")
+        else:
+            intervalo = blocos_mod.proximo_intervalo(camadas, fixos, cap["blocos"], previstas)
         if intervalo is None:
             raise ErroHTTP(409, f"A rede já cobre as {camadas} camadas do modelo. Este PC entraria como réplica, "
                                 "criando rotas alternativas que mudam a cadeia entre consultas. Não é necessário.")
         block_indices = f"{intervalo[0]}:{intervalo[1]}"
         num_blocks = intervalo[1] - intervalo[0]
         plano = {"block_indices": block_indices, "capacidade": cap, "maquinas_previstas": previstas,
-                 "reserva_cliente": False, "ocupados_antes": [f"{a}:{b} ({no})" for a, b, no in fixos],
+                 "reserva_cliente": False, "modo": "manual" if pedido else "automatico",
+                 "pedido_manual": pedido, "acima_da_capacidade": bool(pedido and pedido > cap["blocos"]),
+                 "ocupados_antes": [f"{a}:{b} ({no})" for a, b, no in fixos],
                  "lacunas_antes": [f"{a}:{b}" for a, b in blocos_mod.lacunas(camadas, fixos)]}
 
         args = {"api": api, "experimento": central["experimento"], "no_id": nome_do_no(), "modelo": modelo,
@@ -411,9 +443,10 @@ class ManipuladorRede(ManipuladorBase):
         self.json(200, self.rede.estado())
 
     def rota_sugestao(self, q):
-        """Blocos sugeridos para o nó central (reserva RAM para o cliente rodar aqui também)."""
+        """Capacidade deste PC. Nó central reserva RAM para o cliente (roda aqui); membro (?membro=1) não."""
         dtype = q.get("torch_dtype") or DTYPE_PADRAO
-        cap, por_bloco, camadas = blocos_que_cabem(MODELO_PADRAO, dtype, reservar_cliente=True)
+        membro = q.get("membro") in ("1", "true")
+        cap, por_bloco, camadas = blocos_que_cabem(MODELO_PADRAO, dtype, reservar_cliente=not membro)
         self.json(200, {"num_blocks": cap["blocos"], "gb_por_bloco": round(por_bloco, 3), "camadas": camadas,
                         "ram_gb": round(ram_gb(), 1), "capacidade": cap, "explicacao": blocos_mod.descrever(cap)})
 

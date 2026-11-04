@@ -47,14 +47,22 @@ $("btnModoCentral").addEventListener("click", async () => {
     const s = await api(`/api/sugestao?torch_dtype=${$("cDtype").value}`);
     st.camadas = s.camadas;
     $("cBlocos").value = "";
-    $("cBlocos").placeholder = s.num_blocks;
-    $("cBlocos").max = s.num_blocks;
+    $("cBlocos").placeholder = `automático (${s.num_blocks})`;
+    $("cBlocos").max = s.camadas;
     $("cCapacidade").textContent = s.num_blocks > 0
       ? `Capacidade deste PC (já reservando o cliente, que roda aqui): ${s.explicacao}.`
       : `Este PC não comporta nenhum bloco agora: ${s.explicacao}. Feche programas ou use outro PC como nó central.`;
   } catch (err) { mostrar($("erroCentral"), err.message); }
 });
-$("btnModoEntrar").addEventListener("click", () => { tela("formEntrar"); $("eId").focus(); });
+$("btnModoEntrar").addEventListener("click", async () => {
+  tela("formEntrar"); $("eId").focus();
+  try {
+    const s = await api("/api/sugestao?membro=1");
+    $("eBlocos").placeholder = `automático (até ${s.num_blocks})`;
+    $("eBlocos").max = s.camadas;
+    $("eCapacidade").textContent = `Capacidade deste PC: ${s.explicacao}. (Estimada em bfloat16; a precisão real é a do nó central.)`;
+  } catch (err) { $("eCapacidade").textContent = ""; }
+});
 document.querySelectorAll("[data-voltar]").forEach((b) => b.addEventListener("click", () => tela("escolha")));
 
 $("fCentral").addEventListener("submit", async (ev) => {
@@ -65,7 +73,7 @@ $("fCentral").addEventListener("submit", async (ev) => {
   try {
     st.estado = await api("/api/central", {
       interface: $("cInterface").value, experimento: $("cExperimento").value.trim(), torch_dtype: $("cDtype").value,
-      num_blocks: Number($("cBlocos").value) || null, sem_rapl: $("cSemRapl").checked,
+      num_blocks: Number($("cBlocos").value) || null, forcar_blocos: $("cForcar").checked, sem_rapl: $("cSemRapl").checked,
       maquinas_previstas: Number($("cPrevistas").value) || null,
     });
     st.logPapel = "servidor";
@@ -81,7 +89,10 @@ async function conectar() {
   btn.disabled = true; btn.textContent = "Conectando…";
   mostrar($("erroEntrar"), "");
   try {
-    st.estado = await api("/api/entrar", { multiaddr: id, sem_rapl: $("eSemRapl").checked });
+    st.estado = await api("/api/entrar", {
+      multiaddr: id, sem_rapl: $("eSemRapl").checked,
+      num_blocks: Number($("eBlocos").value) || null, forcar_blocos: $("eForcar").checked,
+    });
     st.logPapel = "servidor";
     history.replaceState(null, "", "/");
     render();

@@ -18,6 +18,9 @@ Capacidade de um PC (GiB; mesma unidade de specs.ram_total_gb):
 Distribuição: o nó central serve 0:n; cada PC que entra recebe o primeiro intervalo de
 camadas ainda não coberto, limitado à sua capacidade e, se informado o número de PCs
 previstos, à cota balanceada ⌈camadas restantes / PCs restantes⌉.
+
+Modo manual: o operador informa quantos blocos o PC serve. Ele recebe o primeiro trecho
+livre onde esse número cabe inteiro (sem sobrepor outro servidor), ignorando a cota.
 """
 
 import math
@@ -126,3 +129,11 @@ def proximo_intervalo(camadas, fixos, blocos_max, previstas=None):
     alvo = alvo_balanceado(camadas, fixos, previstas)
     n = min(blocos_max, fim - ini, alvo or camadas)
     return ini, ini + n
+
+
+def intervalo_manual(camadas, fixos, n):
+    """Primeiro trecho livre com pelo menos n camadas: (ini, ini+n). None se nenhum comporta n."""
+    for ini, fim in lacunas(camadas, fixos):
+        if fim - ini >= n:
+            return ini, ini + n
+    return None
