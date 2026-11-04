@@ -34,8 +34,15 @@ def estimar_memoria_gb(modelo, torch_dtype, num_blocos=None):
         import torch
         from transformers import AutoConfig, AutoModelForCausalLM
     except ImportError as e:
+        import importlib.util
+        import sys
+        raiz = (e.name or "").split(".")[0]
+        if raiz and importlib.util.find_spec(raiz) is not None:
+            # instalado, mas a importação falhou (ex.: dois imports simultâneos em threads): mostra o erro real
+            raise SystemExit(f"❌ Falha ao importar '{e.name}' (o pacote está instalado em {sys.executable}): "
+                             f"{type(e).__name__}: {e}")
         raise SystemExit(f"❌ Dependência ausente: {e.name}. Instale com 'pip install -r requirements.txt' "
-                         f"no ambiente Python usado ({__import__('sys').executable}).")
+                         f"no ambiente Python usado ({sys.executable}).")
 
     cfg = AutoConfig.from_pretrained(modelo)
     with torch.device("meta"):

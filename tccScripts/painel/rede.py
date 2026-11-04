@@ -97,28 +97,50 @@ def ram_gb():
 
 
 _cache_bloco = {}
+_cache_cliente = {}
+# O servidor HTTP atende cada requisição numa thread. A primeira estimativa importa torch e
+# transformers (vários segundos); duas requisições simultâneas (ex.: /api/sugestao e /api/central)
+# importando ao mesmo tempo podem falhar no carregamento preguiçoso do transformers. Serializa.
+_lock_modelo = threading.Lock()
 
 
 def gb_por_bloco(modelo, torch_dtype):
-    """(GB por bloco, total de camadas) — instancia a arquitetura em 'meta' (só baixa o config)."""
+    """(GiB por bloco, total de camadas) — instancia a arquitetura em 'meta' (só baixa o config)."""
     chave = (modelo, torch_dtype)
-    if chave not in _cache_bloco:
-        try:
-            _cache_bloco[chave] = exp_mod.estimar_memoria_gb(modelo, torch_dtype, 1)
-        except BaseException as e:  # estimar_memoria_gb usa SystemExit para dependência ausente
-            raise ErroHTTP(500, f"Não foi possível estimar a memória do modelo: {e}")
-    return _cache_bloco[chave]
+    with _lock_modelo:
+        if chave not in _cache_bloco:
+            try:
+                _cache_bloco[chave] = exp_mod.estimar_memoria_gb(modelo, torch_dtype, 1)
+            except BaseException as e:  # estimar_memoria_gb usa SystemExit para erros de importação
+                raise ErroHTTP(500, f"Não foi possível estimar a memória do modelo: {e}")
+        return _cache_bloco[chave]
+
+
+def gib_cliente(modelo, torch_dtype):
+    chave = (modelo, torch_dtype)
+    with _lock_modelo:
+        if chave not in _cache_cliente:
+            try:
+                _cache_cliente[chave] = blocos_mod.memoria_cliente_gib(modelo, torch_dtype)
+            except Exception as e:
+                raise ErroHTTP(500, f"Não foi possível estimar a memória do cliente: {type(e).__name__}: {e}")
+        return _cache_cliente[chave]
+
+
+def aquecer_estimativas():
+    """Importa torch/transformers e calcula as estimativas padrão logo ao abrir a página."""
+    try:
+        gb_por_bloco(MODELO_PADRAO, DTYPE_PADRAO)
+        gib_cliente(MODELO_PADRAO, DTYPE_PADRAO)
+        print("[rede] Estimativas de memória do modelo prontas.", flush=True)
+    except ErroHTTP as e:
+        print(f"[rede] ⚠️  {e}", flush=True)
 
 
 def blocos_que_cabem(modelo, torch_dtype, reservar_cliente):
     """Capacidade pela RAM DISPONÍVEL agora (ver bancada/blocos.py): (dict, GiB/bloco, camadas)."""
     por_bloco, camadas = gb_por_bloco(modelo, torch_dtype)
-    reserva = 0.0
-    if reservar_cliente:
-        try:
-            reserva = blocos_mod.memoria_cliente_gib(modelo, torch_dtype)
-        except Exception as e:
-            raise ErroHTTP(500, f"Não foi possível estimar a memória do cliente: {e}")
+    reserva = gib_cliente(modelo, torch_dtype) if reservar_cliente else 0.0
     total, disponivel = blocos_mod.memoria_ram()
     cap = blocos_mod.capacidade(por_bloco, total, disponivel, reserva)
     cap["blocos"] = min(cap["blocos"], camadas)
@@ -453,6 +475,7 @@ def main():
     # segundo plano), os filhos herdariam o mesmo e nunca parariam.
     signal.signal(signal.SIGINT, signal.default_int_handler)
     rede = Rede()
+    threading.Thread(target=aquecer_estimativas, daemon=True).start()
     servidor = criar_servidor(a.host, a.porta, ManipuladorRede, token, rede=rede)
 
     def encerrar(*_):
