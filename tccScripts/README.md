@@ -156,6 +156,26 @@ niveis = pd.read_sql("SELECT * FROM v_niveis", con)
 req = pd.read_sql("SELECT * FROM v_requisicoes", con)
 ```
 
+## Servidor centralizado convencional × P2P (teste de carga)
+
+`bancada/servidor_central.py` é um servidor de inferência HTTP com o modelo inteiro em uma máquina
+(`POST /v1/gerar`), com lote dinâmico (`--modo lote`, padrão) ou fila FIFO (`--modo serial`), medido
+pelo mesmo pipeline (cenário `centralizado`, PUE/WUE de data center). `bancada/carga_central.py` aplica
+a MESMA carga do `teste_carga` P2P (mesmo plano, semente, níveis e orçamentos) por clientes HTTP
+simultâneos e grava no mesmo `dados/carga.db`.
+
+Com a máquina livre (sem nó P2P rodando — a medição é da máquina inteira):
+
+```bash
+.venv/bin/python -m bancada.carga_central --api http://127.0.0.1:5000 --experimento central-carga-qwen05b \
+    --iniciar_servidor --modelo Qwen/Qwen2.5-0.5B-Instruct --torch_dtype float32 \
+    --clientes 1-10 --requisicoes_por_cliente 2 --tokens 16,32,64,128,256 --interface enp3s0
+.venv/bin/python analise/comparar_carga.py --api http://127.0.0.1:5000   # P2P × centralizado por nível
+```
+
+`--iniciar_servidor` sobe a telemetria (se não houver) e o servidor, mede a linha de base, aplica a
+carga e encerra tudo. A tabela `requisicoes` ganha `t_fila_s`, `t_geracao_s` e `lote` no centralizado.
+
 ## Regras do método
 
 - Energia medida **por janela de consulta**, somando todas as máquinas do cenário, no relógio da API.

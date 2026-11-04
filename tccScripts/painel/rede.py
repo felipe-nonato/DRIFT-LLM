@@ -249,10 +249,16 @@ class Rede:
         api = (corpo.get("api") or f"http://{ip}:{PORTA_TELEMETRIA}").rstrip("/")
         try:
             r = requests.get(f"{api}/sessoes", timeout=5)
-            r.raise_for_status()
         except requests.RequestException as e:
             raise ErroHTTP(502, f"Não consegui falar com a telemetria do nó central em {api} ({type(e).__name__}). "
                                 "Libere a porta 5000 no firewall do nó central.")
+        if not r.ok:
+            try:
+                detalhe = r.json().get("erro") or r.text
+            except ValueError:
+                detalhe = r.text
+            raise ErroHTTP(502, f"A telemetria do nó central respondeu com erro HTTP {r.status_code}: {detalhe[:300]}. "
+                                "Reinicie o ./rede.sh no nó central.")
         sessoes = [s for s in r.json().get("sessoes", []) if peer in (s.get("multiaddr") or "")]
         abertas = [s for s in sessoes if not s.get("fim")]
         if not abertas:
