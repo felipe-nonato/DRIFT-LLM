@@ -6,6 +6,7 @@
 #   ./rede.sh                 # http://127.0.0.1:8090
 #   PORTA=8091 ./rede.sh
 #   CACHE=/mnt/windows/drift-cache ./rede.sh   # pesos do modelo num disco de verdade (live USB)
+#   REDE=lan ./rede.sh        # aceita rede local (padrão: só Tailscale, em todos os PCs)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -18,7 +19,7 @@ if [ -n "${RAPL}" ] && [ ! -r "${RAPL}" ]; then
   echo "      sudo chmod o+r /sys/class/powercap/intel-rapl:*/energy_uj /sys/class/powercap/intel-rapl:*:*/energy_uj"
   echo "    ou marque 'sem RAPL' em Avançado na página."
 fi
-if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
+if [ "${REDE:-tailscale}" = "lan" ] && command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
   echo "i   Firewall ufw ativo: as portas 5000/tcp (telemetria) e 31337/tcp (P2P) precisam estar liberadas:"
   echo "      sudo ufw allow 5000/tcp && sudo ufw allow 31337/tcp"
 fi
@@ -43,7 +44,32 @@ if [ "${LIVRE_GIB}" -lt 16 ]; then
   echo "!!  Só ${LIVRE_GIB} GiB livres em ${DIR_CACHE}; o modelo completo precisa de ~16 GiB."
 fi
 
+# Tailscale: todos os PCs precisam dele, na mesma tailnet. Na rede local, um PC atrás de outro
+# roteador (outro Wi-Fi) consegue sair até o nó central, mas ninguém consegue chegar até ele.
+REDE="${REDE:-tailscale}"
+if [ "${REDE}" = "tailscale" ]; then
+  if ! command -v tailscale >/dev/null 2>&1; then
+    echo "xx  Tailscale não instalado (num live USB, instale a cada boot). Rode:"
+    echo "      curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up"
+    echo "    e abra o link de login com a MESMA conta dos outros PCs. (Para rede local: REDE=lan ./rede.sh)"
+    exit 1
+  fi
+  IP_TS=$(tailscale ip -4 2>/dev/null | head -1 || true)
+  if [ -z "${IP_TS}" ]; then
+    echo "xx  Tailscale instalado, mas desconectado. Rode:  sudo tailscale up"
+    echo "    e abra o link de login com a MESMA conta dos outros PCs."
+    exit 1
+  fi
+  echo "i   Tailscale conectado: ${IP_TS} ($(hostname))"
+  if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
+    echo "i   ufw ativo: libere o tráfego do Tailscale (uma vez):  sudo ufw allow in on tailscale0"
+  fi
+  ARG_REDE="tailscale"
+else
+  ARG_REDE="qualquer"
+fi
+
 PORTA="${PORTA:-8090}"
 URL="http://127.0.0.1:${PORTA}"
 ( sleep 1.5; command -v xdg-open >/dev/null 2>&1 && xdg-open "${URL}" >/dev/null 2>&1 || true ) &
-exec .venv/bin/python -m painel.rede --porta "${PORTA}"
+exec .venv/bin/python -m painel.rede --porta "${PORTA}" --rede "${ARG_REDE}"

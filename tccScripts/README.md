@@ -95,6 +95,13 @@ Tudo aparece na página do central:
 **Desligar este PC** (ou Ctrl+C no terminal) para os processos na ordem certa. Desligar o central derruba a rede.
 Se o `rede.sh` avisar, libere o RAPL e as portas 5000/31337 no firewall (ele mostra os comandos).
 
+**Rede: todos os PCs pelo Tailscale (padrão).** O `rede.sh` só abre se o Tailscale estiver conectado
+(`curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up`, mesma conta em todos os PCs) e a
+página só aceita IPs 100.x. Motivo: na rede local, um PC atrás de outro roteador (outro Wi-Fi) entra na rede
+mas ninguém consegue conectar nele, e as consultas ficam em `TimeoutError`/`dial backoff`. Com ufw ativo:
+`sudo ufw allow in on tailscale0`. Confira que as conexões são diretas: `tailscale ping <host>` deve dizer
+"via IP:porta", não "via DERP" (relay distante: latência alta). Rede local só com `REDE=lan ./rede.sh`.
+
 ## Uso com o painel
 
 1. Defina o mesmo segredo em todas as máquinas: `export BANCADA_TOKEN=<segredo>`.

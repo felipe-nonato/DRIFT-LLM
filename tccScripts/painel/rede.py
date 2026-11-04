@@ -16,6 +16,7 @@ Uso (na raiz do projeto):
 """
 
 import argparse
+import ipaddress
 import hmac
 import json
 import os
@@ -49,6 +50,10 @@ DTYPE_PADRAO = "bfloat16"
 PORTA_TELEMETRIA = 5000
 PORTA_P2P = 31337
 PAPEIS_LOCAIS = ("telemetria", "servidor", "cliente")
+# "tailscale": todos os PCs conversam pelos IPs do Tailscale (100.64.0.0/10), que se alcançam
+# mesmo atrás de roteadores diferentes. "qualquer": aceita também rede local (./rede.sh com REDE=lan).
+REDE_TAILSCALE = ipaddress.ip_network("100.64.0.0/10")
+MODO_REDE = "tailscale"
 
 
 # ---------------------------------------------------------------- utilidades de rede/memória
@@ -82,6 +87,24 @@ def interface_para(ip_destino):
         if i["ip"] == ip_local:
             return i["nome"], ip_local
     return None, ip_local
+
+
+def eh_tailscale(ip):
+    try:
+        return ipaddress.ip_address(ip) in REDE_TAILSCALE
+    except ValueError:
+        return False
+
+
+def exigir_tailscale(ip, papel):
+    if MODO_REDE != "tailscale" or eh_tailscale(ip):
+        return
+    if papel == "central":
+        raise ErroHTTP(422, f"{ip} não é um IP do Tailscale (100.x.y.z). Todos os PCs devem usar o Tailscale: "
+                            "escolha a rede Tailscale. Sem ela aqui, rode 'sudo tailscale up' e reabra o ./rede.sh.")
+    raise ErroHTTP(422, f"Esse ID usa {ip}, que não é um IP do Tailscale (100.x.y.z): o nó central criou a rede "
+                        "pela rede local, e PCs atrás de outro roteador não conseguem alcançá-lo. Recrie a rede no "
+                        "nó central escolhendo a rede Tailscale e copie o novo ID.")
 
 
 def ip_da_interface(nome):
@@ -202,7 +225,7 @@ class Rede:
         procs = self.agente.estados()
         return {
             "hostname": socket.gethostname(), "no_id": nome_do_no(), "ram_gb": round(ram_gb(), 1),
-            "interfaces": interfaces_ipv4(), "modo": self.modo, "multiaddr": self.multiaddr(),
+            "interfaces": interfaces_ipv4(), "rede": MODO_REDE, "modo": self.modo, "multiaddr": self.multiaddr(),
             "processos": procs,
         }
 
@@ -215,6 +238,7 @@ class Rede:
         ip = ip_da_interface(interface)
         if not ip:
             raise ErroHTTP(422, f"Interface '{interface}' sem IPv4.")
+        exigir_tailscale(ip, "central")
         modelo, dtype = MODELO_PADRAO, corpo.get("torch_dtype") or DTYPE_PADRAO
         if any(p["ativo"] for p in self.agente.estados().values()):
             raise ErroHTTP(409, "Já há processos rodando neste PC. Desligue antes de iniciar de novo.")
@@ -278,11 +302,15 @@ class Rede:
     def entrar(self, corpo):
         multiaddr = (corpo.get("multiaddr") or "").strip()
         ip, porta, peer = analisar_multiaddr(multiaddr)
+        exigir_tailscale(ip, "membro")
         if any(p["ativo"] for p in self.agente.estados().values()):
             raise ErroHTTP(409, "Este PC já está numa rede. Saia antes de entrar em outra.")
         interface, ip_local = interface_para(ip)
         if not interface:
             raise ErroHTTP(422, f"Este PC não alcança {ip}. Ele está na mesma rede local / Tailscale que o nó central?")
+        if MODO_REDE == "tailscale" and not eh_tailscale(ip_local):
+            raise ErroHTTP(422, f"Este PC chegaria a {ip} por {interface} ({ip_local}), fora do Tailscale. "
+                                "Rode 'sudo tailscale up' neste PC (mesma conta/tailnet do nó central) e reabra o ./rede.sh.")
         if ip_local == ip:
             raise ErroHTTP(422, "Esse ID é deste próprio PC: aqui ele já é o nó central.")
 
@@ -500,7 +528,11 @@ def main():
     p = argparse.ArgumentParser(description="Página local da rede P2P (nó central ou entrada de novos PCs)")
     p.add_argument("--host", default="127.0.0.1", help="Endereço de escuta (padrão: só local)")
     p.add_argument("--porta", type=int, default=8090)
+    p.add_argument("--rede", choices=("tailscale", "qualquer"), default="tailscale",
+                   help="tailscale (padrão): só IPs 100.x do Tailscale; qualquer: aceita rede local")
     a = p.parse_args()
+    global MODO_REDE
+    MODO_REDE = a.rede
     token = os.environ.get("BANCADA_TOKEN") or None
     exigir_token_se_exposto(a.host, token, "Página da rede")
 

@@ -84,7 +84,9 @@ def montar_comando(args, ip):
         sys.executable, "-m", "drift.cli.run_server", args.modelo,
         "--device", "cpu",
         "--torch_dtype", args.torch_dtype,
-        "--host_maddrs", f"/ip4/0.0.0.0/tcp/{args.porta}",
+        # escuta SÓ no IP da interface escolhida (ex.: Tailscale): com 0.0.0.0 o nó também aceitaria
+        # conexões pela rede local, e a rota entre os peers deixaria de ser a mesma em todos os PCs
+        "--host_maddrs", f"/ip4/{ip}/tcp/{args.porta}",
         "--announce_maddrs", f"/ip4/{ip}/tcp/{args.porta}",
         "--identity_path", identidade,
         "--no_auto_relay",

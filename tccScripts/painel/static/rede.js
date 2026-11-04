@@ -40,9 +40,17 @@ function tela(nome) {
 $("btnModoCentral").addEventListener("click", async () => {
   tela("formCentral");
   const e = st.estado;
-  const preferida = e.interfaces.find((i) => !i.nome.startsWith("tailscale") && !i.nome.startsWith("docker")) || e.interfaces[0];
-  $("cInterface").innerHTML = e.interfaces.map((i) =>
-    `<option value="${esc(i.nome)}" ${i === preferida ? "selected" : ""}>${esc(i.nome.startsWith("tailscale") ? "Tailscale" : "Rede local")} — ${esc(i.nome)} (${esc(i.ip)})</option>`).join("");
+  // Tailscale = IP em 100.64.0.0/10. No modo "tailscale" (padrão do ./rede.sh) só ele é oferecido.
+  const ehTailscale = (ip) => { const [a, b] = ip.split(".").map(Number); return a === 100 && b >= 64 && b < 128; };
+  const opcoes = e.rede === "tailscale" ? e.interfaces.filter((i) => ehTailscale(i.ip)) : e.interfaces;
+  if (!opcoes.length) {
+    $("cInterface").innerHTML = "";
+    mostrar($("erroCentral"), "Este PC não está no Tailscale. Rode 'sudo tailscale up' e reabra o ./rede.sh.");
+    return;
+  }
+  const preferida = opcoes.find((i) => ehTailscale(i.ip)) || opcoes.find((i) => !i.nome.startsWith("docker")) || opcoes[0];
+  $("cInterface").innerHTML = opcoes.map((i) =>
+    `<option value="${esc(i.nome)}" ${i === preferida ? "selected" : ""}>${ehTailscale(i.ip) ? "Tailscale" : "Rede local"} — ${esc(i.nome)} (${esc(i.ip)})</option>`).join("");
   try {
     const s = await api(`/api/sugestao?torch_dtype=${$("cDtype").value}`);
     st.camadas = s.camadas;
