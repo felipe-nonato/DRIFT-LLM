@@ -17,6 +17,7 @@ Uso (na raiz do projeto):
 
 import argparse
 import hmac
+import json
 import os
 import re
 import signal
@@ -28,6 +29,7 @@ from pathlib import Path
 import psutil
 import requests
 
+from bancada import blocos as blocos_mod
 from bancada import experimento as exp_mod
 
 from .agente import Agente
@@ -46,8 +48,6 @@ MODELO_PADRAO = "Qwen/Qwen2.5-7B-Instruct"
 DTYPE_PADRAO = "bfloat16"
 PORTA_TELEMETRIA = 5000
 PORTA_P2P = 31337
-FRACAO_RAM = 0.85
-RESERVA_CLIENTE_GB = 2.0  # embeddings + lm_head carregados pelo cliente (README)
 PAPEIS_LOCAIS = ("telemetria", "servidor", "cliente")
 
 
@@ -111,9 +111,23 @@ def gb_por_bloco(modelo, torch_dtype):
 
 
 def blocos_que_cabem(modelo, torch_dtype, reservar_cliente):
+    """Capacidade pela RAM DISPONÍVEL agora (ver bancada/blocos.py): (dict, GiB/bloco, camadas)."""
     por_bloco, camadas = gb_por_bloco(modelo, torch_dtype)
-    livre = ram_gb() * FRACAO_RAM - (RESERVA_CLIENTE_GB if reservar_cliente else 0)
-    return max(0, min(camadas, int(livre // por_bloco))), por_bloco, camadas
+    reserva = 0.0
+    if reservar_cliente:
+        try:
+            reserva = blocos_mod.memoria_cliente_gib(modelo, torch_dtype)
+        except Exception as e:
+            raise ErroHTTP(500, f"Não foi possível estimar a memória do cliente: {e}")
+    total, disponivel = blocos_mod.memoria_ram()
+    cap = blocos_mod.capacidade(por_bloco, total, disponivel, reserva)
+    cap["blocos"] = min(cap["blocos"], camadas)
+    return cap, por_bloco, camadas
+
+
+def _sem_capacidade(cap):
+    return ErroHTTP(422, "A RAM disponível deste PC não comporta nenhum bloco do modelo. "
+                         f"{blocos_mod.descrever(cap)}. Feche programas (navegador, IDE) e tente de novo.")
 
 
 def telemetria_no_ar(api):
@@ -161,13 +175,26 @@ class Rede:
         if not ip:
             raise ErroHTTP(422, f"Interface '{interface}' sem IPv4.")
         modelo, dtype = MODELO_PADRAO, corpo.get("torch_dtype") or DTYPE_PADRAO
-        num_blocks = int(corpo.get("num_blocks") or 0)
-        if num_blocks < 1:
-            num_blocks, _, _ = blocos_que_cabem(modelo, dtype, reservar_cliente=True)
-        if num_blocks < 1:
-            raise ErroHTTP(422, "A RAM deste PC não comporta nenhum bloco do modelo.")
         if any(p["ativo"] for p in self.agente.estados().values()):
             raise ErroHTTP(409, "Já há processos rodando neste PC. Desligue antes de iniciar de novo.")
+        try:
+            previstas = int(corpo.get("maquinas_previstas") or 0)
+            pedido = int(corpo.get("num_blocks") or 0)
+        except (TypeError, ValueError):
+            raise ErroHTTP(422, "Blocos e PCs previstos devem ser números inteiros.")
+        if not 0 <= previstas <= 64:
+            raise ErroHTTP(422, "PCs previstos: entre 1 e 64 (ou vazio).")
+        # o cliente roda neste PC (botão "Rodar consultas"): a capacidade já reserva a memória dele
+        cap, _, camadas = blocos_que_cabem(modelo, dtype, reservar_cliente=True)
+        if cap["blocos"] < 1:
+            raise _sem_capacidade(cap)
+        if pedido > cap["blocos"]:
+            raise ErroHTTP(422, f"Este PC comporta no máximo {blocos_mod.descrever(cap)}. "
+                                "Use um número menor ou deixe o campo vazio.")
+        num_blocks = blocos_mod.proximo_intervalo(camadas, [], pedido or cap["blocos"], previstas)[1]
+        block_indices = f"0:{num_blocks}"
+        plano = {"block_indices": block_indices, "capacidade": cap, "maquinas_previstas": previstas or None,
+                 "reserva_cliente": True, "pedido_manual": pedido or None}
 
         api = f"http://{ip}:{PORTA_TELEMETRIA}"
         if not telemetria_no_ar(f"http://127.0.0.1:{PORTA_TELEMETRIA}"):
@@ -179,15 +206,16 @@ class Rede:
                 time.sleep(0.5)
 
         args = {"api": api, "experimento": experimento, "no_id": nome_do_no(), "modelo": modelo,
-                "torch_dtype": dtype, "interface": interface, "num_blocks": num_blocks, "bootstrap": True,
-                "porta": PORTA_P2P, "sem_rapl": bool(corpo.get("sem_rapl"))}
+                "torch_dtype": dtype, "interface": interface, "block_indices": block_indices, "bootstrap": True,
+                "porta": PORTA_P2P, "sem_rapl": bool(corpo.get("sem_rapl")), "plano": json.dumps(plano)}
         try:
             self.processo("servidor").iniciar(args)
         except ErroProcesso as e:
             raise ErroHTTP(409, str(e))
         with self._lock:
             self.modo = {"tipo": "central", "api": api, "experimento": experimento, "modelo": modelo,
-                         "torch_dtype": dtype, "interface": interface, "ip": ip, "num_blocks": num_blocks}
+                         "torch_dtype": dtype, "interface": interface, "ip": ip, "num_blocks": num_blocks,
+                         "block_indices": block_indices, "camadas": camadas, "capacidade": cap}
         return self.estado()
 
     def rodar_consultas(self, corpo):
@@ -233,13 +261,37 @@ class Rede:
         extras = central.get("extras") or {}
         modelo = extras.get("modelo") or MODELO_PADRAO
         dtype = extras.get("torch_dtype") or DTYPE_PADRAO
-        num_blocks, _, _ = blocos_que_cabem(modelo, dtype, reservar_cliente=False)
-        if num_blocks < 1:
-            raise ErroHTTP(422, "A RAM deste PC não comporta nenhum bloco do modelo.")
+        cap, _, camadas = blocos_que_cabem(modelo, dtype, reservar_cliente=False)
+        if cap["blocos"] < 1:
+            raise _sem_capacidade(cap)
+
+        # próximo intervalo de camadas ainda não coberto pelos servidores já na rede
+        try:
+            r = requests.get(f"{api}/sessoes", params={"experimento": central["experimento"]}, timeout=5)
+            r.raise_for_status()
+            sessoes_exp = r.json().get("sessoes", [])
+        except requests.RequestException as e:
+            raise ErroHTTP(502, f"Não consegui ler os servidores da rede em {api} ({type(e).__name__}).")
+        fixos, sem_intervalo = blocos_mod.ocupados(sessoes_exp)
+        if sem_intervalo:
+            raise ErroHTTP(409, f"Servidor(es) sem intervalo fixo de blocos na rede ({', '.join(sem_intervalo)}): "
+                                "o Drift escolhe e rebalanceia os blocos deles, então não há como planejar este "
+                                "PC. Recrie a rede com a versão atual da página.")
+        previstas = ((extras.get("plano_blocos") or {}).get("maquinas_previstas")) or None
+        intervalo = blocos_mod.proximo_intervalo(camadas, fixos, cap["blocos"], previstas)
+        if intervalo is None:
+            raise ErroHTTP(409, f"A rede já cobre as {camadas} camadas do modelo. Este PC entraria como réplica, "
+                                "criando rotas alternativas que mudam a cadeia entre consultas. Não é necessário.")
+        block_indices = f"{intervalo[0]}:{intervalo[1]}"
+        num_blocks = intervalo[1] - intervalo[0]
+        plano = {"block_indices": block_indices, "capacidade": cap, "maquinas_previstas": previstas,
+                 "reserva_cliente": False, "ocupados_antes": [f"{a}:{b} ({no})" for a, b, no in fixos],
+                 "lacunas_antes": [f"{a}:{b}" for a, b in blocos_mod.lacunas(camadas, fixos)]}
 
         args = {"api": api, "experimento": central["experimento"], "no_id": nome_do_no(), "modelo": modelo,
-                "torch_dtype": dtype, "interface": interface, "num_blocks": num_blocks,
-                "initial_peers": multiaddr, "porta": PORTA_P2P, "sem_rapl": bool(corpo.get("sem_rapl"))}
+                "torch_dtype": dtype, "interface": interface, "block_indices": block_indices,
+                "initial_peers": multiaddr, "porta": PORTA_P2P, "sem_rapl": bool(corpo.get("sem_rapl")),
+                "plano": json.dumps(plano)}
         try:
             self.processo("servidor").iniciar(args)
         except ErroProcesso as e:
@@ -247,6 +299,7 @@ class Rede:
         with self._lock:
             self.modo = {"tipo": "membro", "api": api, "experimento": central["experimento"], "modelo": modelo,
                          "torch_dtype": dtype, "interface": interface, "ip": ip_local, "num_blocks": num_blocks,
+                         "block_indices": block_indices, "camadas": camadas, "capacidade": cap,
                          "multiaddr_central": multiaddr, "central": central.get("hostname")}
         return self.estado()
 
@@ -280,6 +333,7 @@ class Rede:
             saida.append({"no_id": s["no_id"], "papel": s["papel"], "hostname": s.get("hostname"),
                           "ip": sp.get("rede_ip"), "cpu": sp.get("cpu_modelo"), "ram_gb": sp.get("ram_total_gb"),
                           "metodo": sp.get("metodo_cpu"), "blocos": ex.get("num_blocos"),
+                          "intervalo": ex.get("block_indices"),
                           "bootstrap": bool(ex.get("bootstrap")), "inicio": s.get("inicio")})
         return saida
 
@@ -331,9 +385,9 @@ class ManipuladorRede(ManipuladorBase):
     def rota_sugestao(self, q):
         """Blocos sugeridos para o nó central (reserva RAM para o cliente rodar aqui também)."""
         dtype = q.get("torch_dtype") or DTYPE_PADRAO
-        n, por_bloco, camadas = blocos_que_cabem(MODELO_PADRAO, dtype, reservar_cliente=True)
-        self.json(200, {"num_blocks": n, "gb_por_bloco": round(por_bloco, 3), "camadas": camadas,
-                        "ram_gb": round(ram_gb(), 1)})
+        cap, por_bloco, camadas = blocos_que_cabem(MODELO_PADRAO, dtype, reservar_cliente=True)
+        self.json(200, {"num_blocks": cap["blocos"], "gb_por_bloco": round(por_bloco, 3), "camadas": camadas,
+                        "ram_gb": round(ram_gb(), 1), "capacidade": cap, "explicacao": blocos_mod.descrever(cap)})
 
     def rota_central(self, q):
         self.json(200, self.rede.iniciar_central(self.corpo_json()))

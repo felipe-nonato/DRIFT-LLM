@@ -50,16 +50,58 @@ def estimar_memoria_gb(modelo, torch_dtype, num_blocos=None):
 
 
 def checar_memoria(specs, necessario_gb, forcar, rotulo):
-    disponivel = specs["ram_total_gb"]
-    limite = disponivel * 0.85
-    print(f"[memória] {rotulo}: ~{necessario_gb:.2f} GB de pesos | RAM total {disponivel:.2f} GB")
-    if necessario_gb > limite:
-        msg = (f"Os pesos ({necessario_gb:.2f} GB) excedem 85% da RAM ({disponivel:.2f} GB). Haverá swap, "
-               "o que distorce tempo e energia. Reduza blocos, mude o dtype ou use --forcar_memoria.")
+    from .blocos import FOLGA_GIB, FRACAO_RAM, memoria_ram
+
+    total = specs["ram_total_gb"]
+    _, livre = memoria_ram()
+    print(f"[memória] {rotulo}: ~{necessario_gb:.2f} GiB de pesos | RAM total {total:.2f} GiB, "
+          f"disponível agora {livre:.2f} GiB")
+    problemas = []
+    if necessario_gb > total * FRACAO_RAM:
+        problemas.append(f"Os pesos ({necessario_gb:.2f} GiB) excedem {FRACAO_RAM:.0%} da RAM ({total:.2f} GiB).")
+    if necessario_gb > livre - FOLGA_GIB:
+        # pesos mapeados do arquivo contam como cache: sem RAM livre, são relidos do disco a cada token
+        problemas.append(f"Os pesos ({necessario_gb:.2f} GiB) não cabem na RAM disponível agora "
+                         f"({livre:.2f} GiB − folga de {FOLGA_GIB:.1f} GiB). Feche navegador/IDE ou reduza os blocos.")
+    for msg in problemas:
+        msg += " Haverá paginação (swap/releitura do disco), o que distorce tempo e energia."
         if not forcar:
-            raise SystemExit("❌ " + msg)
+            raise SystemExit("❌ " + msg + " Ou use --forcar_memoria (registrado como limitação).")
         print("⚠️  " + msg)
         specs["avisos"].append(msg)
+
+
+class ContadorTokens:
+    """Streamer do transformers que conta os tokens gerados e imprime o progresso.
+
+    Interface de transformers.generation.streamers.BaseStreamer: put() recebe primeiro o
+    prompt e depois cada token novo; end() ao terminar. Imprime no máximo a cada `intervalo_s`
+    (e no último token): uma linha a cada ~20 s no P2P em CPU, custo desprezível.
+    Formato lido pelo painel (painel/processos.py) e por analise/progresso.py:
+      [P2P] gerando 37/128 tokens em 812s · consulta 1/15 prompt=p1_colonialismo rep=1
+    """
+
+    def __init__(self, rotulo, max_new_tokens, consulta, total, prompt_id, rep, intervalo_s=2.0):
+        self.rotulo, self.max, self.consulta, self.total = rotulo, max_new_tokens, consulta, total
+        self.prompt_id, self.rep, self.intervalo = prompt_id, rep, intervalo_s
+        self.n, self.prompt_visto, self.t0, self.ultimo = 0, False, time.monotonic(), 0.0
+
+    def _imprimir(self):
+        self.ultimo = time.monotonic()
+        print(f"[{self.rotulo}] gerando {self.n}/{self.max} tokens em {self.ultimo - self.t0:.0f}s · "
+              f"consulta {self.consulta}/{self.total} prompt={self.prompt_id} rep={self.rep}", flush=True)
+
+    def put(self, valor):
+        if not self.prompt_visto:  # a primeira chamada traz os tokens de entrada
+            self.prompt_visto = True
+            self._imprimir()
+            return
+        self.n += int(valor.numel())
+        if self.n >= self.max or time.monotonic() - self.ultimo >= self.intervalo:
+            self._imprimir()
+
+    def end(self):
+        self._imprimir()
 
 
 def executar_consultas(sessao, tokenizer, gerar, prompts, repeticoes, max_new_tokens, pausa_s,
@@ -87,8 +129,9 @@ def executar_consultas(sessao, tokenizer, gerar, prompts, repeticoes, max_new_to
         for p in prompts:
             time.sleep(pausa_s)  # repouso entre janelas: separa consultas nas amostras
             ids = preparar(p["texto"])
+            contador = ContadorTokens(rotulo, max_new_tokens, feitas + 1, total, p["id"], rep)
             t0 = sessao.relogio.agora()
-            saida = gerar(ids, max_new_tokens)
+            saida = gerar(ids, max_new_tokens, contador)
             t1 = sessao.relogio.agora()
             n_out = int(saida.shape[1] - ids.shape[1])
             resposta = tokenizer.decode(saida[0, ids.shape[1]:], skip_special_tokens=True)

@@ -17,6 +17,11 @@
   .colar { font-size: 15px; padding: 16px; }
   .ok-msg { color: var(--green); font: 500 13px var(--mono); margin-top: 10px; }
   .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .prog { height: 10px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin: 4px 0 2px; }
+  .prog span { display: block; height: 100%; width: 0; background: var(--green); transition: width .6s ease; }
+  .prog.pausa span { opacity: .45; }
+  .prog-rot { display: flex; justify-content: space-between; gap: 12px; margin-top: 12px;
+              font: 500 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
   .kpi { border: 1px solid var(--line); border-radius: 6px; padding: 12px; background: #fbfaf4; }
   .kpi small { display: block; font: 500 11px var(--mono); color: var(--muted); text-transform: uppercase; }
   .kpi b { display: block; font: 600 22px var(--sans); margin-top: 6px; font-variant-numeric: tabular-nums; }
@@ -58,11 +63,18 @@
           <div><label for="cInterface">Rede</label><select id="cInterface"></select></div>
           <div><label for="cExperimento">Nome do experimento</label>
             <input id="cExperimento" value="exp01" required pattern="[A-Za-z0-9_.\-]{1,64}"></div>
+          <div><label for="cPrevistas">PCs servidores previstos (opcional)</label>
+            <input id="cPrevistas" type="number" min="1" max="64" placeholder="ex.: 3"></div>
         </div>
+        <p class="sub" id="cCapacidade"></p>
+        <p class="sub">Cada PC serve um intervalo fixo de camadas, calculado pela RAM <b>disponível</b> no momento
+          (feche navegador e IDE antes). Este PC fica com as primeiras; cada PC que entrar pega o próximo trecho livre.
+          Informando o total de PCs, a divisão é equilibrada entre eles (útil para comparar redes de tamanhos
+          diferentes), mas um PC que não comportar sua cota deixa camadas sem servidor.</p>
         <details>
           <summary class="sub" style="cursor:pointer;margin-top:12px">Avançado</summary>
           <div class="row">
-            <div><label for="cBlocos">Blocos neste PC</label><input id="cBlocos" type="number" min="1" max="200"></div>
+            <div><label for="cBlocos">Blocos neste PC (máx. calculado)</label><input id="cBlocos" type="number" min="1" max="200"></div>
             <div><label for="cDtype">Precisão</label>
               <select id="cDtype"><option>bfloat16</option><option>float32</option><option>float16</option></select></div>
           </div>
@@ -140,6 +152,15 @@
         <button class="ghost" id="btnPararConsultas" type="button" disabled>Parar</button>
       </div>
       <p class="sub" style="margin-top:12px" id="estadoCliente">Cliente parado.</p>
+      <div id="progressoGeracao" hidden>
+        <div class="prog-rot"><span id="rotTokens">Consulta atual</span><span id="valTokens"></span></div>
+        <div class="prog" role="progressbar" aria-labelledby="rotTokens" aria-valuemin="0" aria-valuemax="100"
+             id="barTokensWrap"><span id="barTokens"></span></div>
+        <p class="sub" id="detTokens"></p>
+        <div class="prog-rot"><span id="rotConsultas">Experimento</span><span id="valConsultas"></span></div>
+        <div class="prog" role="progressbar" aria-labelledby="rotConsultas" aria-valuemin="0" aria-valuemax="100"
+             id="barConsultasWrap"><span id="barConsultas"></span></div>
+      </div>
       <div class="aviso" id="erroConsultas" hidden></div>
     </article>
 

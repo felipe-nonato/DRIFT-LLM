@@ -99,6 +99,10 @@ Se o `rede.sh` avisar, libere o RAPL e as portas 5000/31337 no firewall (ele mos
 
 1. Defina o mesmo segredo em todas as máquinas: `export BANCADA_TOKEN=<segredo>`.
 2. Ajuste `config/maquinas.json` (IPs do Tailscale, papéis, `num_blocks` somando ≥ 28).
+   Na página da rede (`./rede.sh`) os blocos são planejados sozinhos: cada PC serve um intervalo fixo
+   (`--block_indices`) calculado pela RAM **disponível** no momento (ver `bancada/blocos.py`). Feche
+   navegador e IDE antes de criar a rede ou entrar nela. Prefira como nó central o PC com mais RAM,
+   pois o cliente (embeddings + lm_head, ~2,3 GiB em bf16 e ~4,4 GiB em fp32) roda nele.
 3. Em **cada** máquina, na raiz do projeto: `python -m painel.agente`
    (escuta no IP do `tailscale0`, porta 7000; recusa iniciar exposto sem token).
 4. Em uma máquina: `python -m painel.servidor` e abra `http://127.0.0.1:8080`.
@@ -115,8 +119,8 @@ processos iniciados são parados (sem órfãos).
 
 ```bash
 python -m bancada.telemetria
-python -m bancada.no_p2p --api http://IP:5000 --experimento exp01 --no_id no1 --bootstrap --num_blocks 10 --torch_dtype bfloat16
-python -m bancada.no_p2p --api http://IP:5000 --experimento exp01 --no_id no2 --initial_peers <MULTIADDR> --num_blocks 10 --torch_dtype bfloat16
+python -m bancada.no_p2p --api http://IP:5000 --experimento exp01 --no_id no1 --bootstrap --block_indices 0:8 --torch_dtype bfloat16
+python -m bancada.no_p2p --api http://IP:5000 --experimento exp01 --no_id no2 --initial_peers <MULTIADDR> --block_indices 8:14 --torch_dtype bfloat16
 python -m bancada.cliente_p2p --api http://IP:5000 --experimento exp01 --initial_peers <MULTIADDR> --torch_dtype bfloat16
 python -m bancada.centralizado --api http://IP:5000 --experimento exp01 --torch_dtype bfloat16
 curl "http://IP:5000/relatorio.csv?experimento=exp01"

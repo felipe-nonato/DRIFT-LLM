@@ -46,7 +46,12 @@ $("btnModoCentral").addEventListener("click", async () => {
   try {
     const s = await api(`/api/sugestao?torch_dtype=${$("cDtype").value}`);
     st.camadas = s.camadas;
-    $("cBlocos").value = s.num_blocks;
+    $("cBlocos").value = "";
+    $("cBlocos").placeholder = s.num_blocks;
+    $("cBlocos").max = s.num_blocks;
+    $("cCapacidade").textContent = s.num_blocks > 0
+      ? `Capacidade deste PC (já reservando o cliente, que roda aqui): ${s.explicacao}.`
+      : `Este PC não comporta nenhum bloco agora: ${s.explicacao}. Feche programas ou use outro PC como nó central.`;
   } catch (err) { mostrar($("erroCentral"), err.message); }
 });
 $("btnModoEntrar").addEventListener("click", () => { tela("formEntrar"); $("eId").focus(); });
@@ -61,6 +66,7 @@ $("fCentral").addEventListener("submit", async (ev) => {
     st.estado = await api("/api/central", {
       interface: $("cInterface").value, experimento: $("cExperimento").value.trim(), torch_dtype: $("cDtype").value,
       num_blocks: Number($("cBlocos").value) || null, sem_rapl: $("cSemRapl").checked,
+      maquinas_previstas: Number($("cPrevistas").value) || null,
     });
     st.logPapel = "servidor";
     render();
@@ -127,8 +133,8 @@ function renderAtivo() {
   const central = m.tipo === "central";
   $("tituloAtivo").textContent = central ? `Nó central — ${m.experimento}` : `Conectado à rede — ${m.experimento}`;
   $("subAtivo").textContent = central
-    ? `Este PC (${e.hostname}, ${m.ip} via ${m.interface}) serve ${m.num_blocks} blocos e hospeda a telemetria.`
-    : `Este PC (${e.hostname}, ${m.ip} via ${m.interface}) serve ${m.num_blocks} blocos. Nó central: ${m.central || "?"}.`;
+    ? `Este PC (${e.hostname}, ${m.ip} via ${m.interface}) serve as camadas ${m.block_indices} (${m.num_blocks} blocos) e hospeda a telemetria.`
+    : `Este PC (${e.hostname}, ${m.ip} via ${m.interface}) serve as camadas ${m.block_indices} (${m.num_blocks} blocos). Nó central: ${m.central || "?"}.`;
   const selo = $("seloServidor");
   selo.className = `selo ${srv.estado}`;
   selo.textContent = `servidor: ${TEXTO_ESTADO[srv.estado] || srv.estado}`;
@@ -144,11 +150,48 @@ function renderAtivo() {
   $("estadoCliente").textContent = cli.ativo
     ? `Cliente: ${TEXTO_ESTADO[cli.estado] || cli.estado}${prog ? ` — consulta ${prog}` : ""}`
     : cli.estado === "concluido" ? "Consultas concluídas. Resultados abaixo." : cli.estado === "falhou" ? "O cliente falhou: veja o log 'cliente'." : "Cliente parado.";
+  renderGeracao(cli);
   $("linkCsv").setAttribute("download", `${m.experimento}.csv`);
 
   const papeis = Object.values(e.processos).filter((p) => p.iniciado_em).map((p) => p.papel);
   $("abasLog").innerHTML = papeis.map((p) => `<button type="button" class="pequeno ${p === st.logPapel ? "ativa" : "ghost"}" data-log="${p}">${p}</button>`).join("");
 }
+function duracao(seg) {
+  seg = Math.max(0, Math.round(seg));
+  const h = Math.floor(seg / 3600), m = Math.floor((seg % 3600) / 60), s = seg % 60;
+  return h ? `${h} h ${String(m).padStart(2, "0")} min` : m ? `${m} min ${String(s).padStart(2, "0")} s` : `${s} s`;
+}
+
+function barra(id, fracao, texto) {
+  const pct = Math.max(0, Math.min(1, fracao || 0)) * 100;
+  $(id).style.width = `${pct.toFixed(1)}%`;
+  $(`${id}Wrap`).setAttribute("aria-valuenow", pct.toFixed(0));
+  return texto;
+}
+
+// Barras de progresso a partir das linhas "[P2P] gerando X/Y tokens em Ns · consulta k/n ..." do cliente
+function renderGeracao(cli) {
+  const g = cli.artefatos?.geracao, feitas = Number((cli.artefatos?.progresso || "0/0").split("/")[0]);
+  const caixa = $("progressoGeracao");
+  caixa.hidden = !cli.ativo || !g;
+  if (caixa.hidden) return;
+  const concluida = feitas >= g.consulta;            // já registrada: agora é a pausa antes da próxima
+  const decorrido = g.decorrido_s + (concluida ? 0 : (Date.now() / 1000 - g.visto_em));
+  const taxa = g.tokens > 0 && g.decorrido_s > 0 ? g.tokens / g.decorrido_s : null;   // tok/s desde o início
+  $("rotTokens").textContent = concluida
+    ? `Consulta ${g.consulta}/${g.total} concluída — pausa antes da próxima`
+    : `Consulta ${g.consulta}/${g.total} · ${g.prompt} · repetição ${g.rep}`;
+  $("valTokens").textContent = barra("barTokens", g.tokens / g.max, `${g.tokens}/${g.max} tokens`);
+  $("barTokensWrap").classList.toggle("pausa", concluida);
+  $("detTokens").textContent = concluida ? `${g.tokens} tokens em ${duracao(g.decorrido_s)}`
+    : !taxa ? `processando a entrada… ${duracao(decorrido)}`
+    : `${duracao(decorrido)} · ${taxa.toFixed(3)} tok/s · ~${duracao((g.max - g.tokens) / taxa)} para o limite de ${g.max}`
+      + " (a resposta pode terminar antes)";
+  const parcial = concluida ? 0 : g.tokens / g.max;
+  $("valConsultas").textContent = barra("barConsultas", (feitas + parcial) / g.total,
+    `${feitas}/${g.total} consultas`);
+}
+
 $("abasLog").addEventListener("click", (ev) => {
   const p = ev.target.dataset?.log;
   if (!p) return;
@@ -169,11 +212,16 @@ async function renderMembros() {
     const { membros } = await api("/api/membros");
     const servidores = membros.filter((x) => x.papel === "servidor");
     const soma = servidores.reduce((s, x) => s + (x.blocos || 0), 0);
-    $("cobertura").textContent = `${servidores.length} servidor(es) somando ${soma} de ${st.camadas} blocos` +
-      (soma >= st.camadas ? " — modelo completo, pronto para consultas." : " — faltam blocos: conecte mais PCs.");
+    const camadas = (st.estado.modo && st.estado.modo.camadas) || st.camadas;
+    const trechos = servidores.filter((x) => x.intervalo).map((x) => `${x.intervalo} ${x.no_id}`).join(" · ");
+    $("cobertura").textContent = `${servidores.length} servidor(es) somando ${soma} de ${camadas} blocos` +
+      (soma >= camadas ? " — modelo completo, pronto para consultas."
+        : " — faltam blocos: conecte mais PCs. (Com “PCs previstos”, um PC que não comporta sua cota deixa camadas"
+          + " sobrando; sem esse campo, cada PC serve o máximo que cabe e a cobertura é garantida se a RAM somar o modelo.)") +
+      (trechos ? ` Camadas: ${trechos}.` : "");
     $("membros").innerHTML = membros.map((x) => `<tr>
       <td>${esc(x.no_id)}${x.bootstrap ? " ★" : ""}</td><td>${esc(x.papel)}</td><td>${esc(x.ip)}</td>
-      <td>${esc(x.cpu)}</td><td class="num">${fmt(x.ram_gb, 1)}</td><td class="num">${x.blocos ?? "—"}</td>
+      <td>${esc(x.cpu)}</td><td class="num">${fmt(x.ram_gb, 1)}</td><td class="num">${x.intervalo ? `${esc(x.intervalo)} (${x.blocos})` : (x.blocos ?? "—")}</td>
       <td>${esc(x.metodo === "rapl" ? "RAPL" : "estimada (TDP)")}</td></tr>`).join("") || `<tr><td colspan="7">Nenhum PC registrado ainda.</td></tr>`;
   } catch (err) {
     $("cobertura").textContent = err.message;

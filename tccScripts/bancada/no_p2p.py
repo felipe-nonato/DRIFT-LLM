@@ -26,6 +26,7 @@ OBS: flags do run_server seguem o Petals (do qual o Drift é fork); conferir com
 """
 
 import argparse
+import json
 import re
 import signal
 import subprocess
@@ -34,7 +35,7 @@ import threading
 
 import requests
 
-from . import caminhos, experimento
+from . import blocos, caminhos, experimento
 from . import specs as specs_mod
 from .medidor import DIR_LOGS, SessaoMedida
 
@@ -63,6 +64,9 @@ def parse_args():
     p.add_argument("--step_timeout", type=float, default=900.0)
     p.add_argument("--baseline_s", type=float, help="Sobrepõe a duração da linha de base da config")
     p.add_argument("--forcar_memoria", action="store_true", help="Prossegue mesmo se os pesos não couberem na RAM")
+    p.add_argument("--plano", help="JSON do planejamento de blocos (gravado nos extras da sessão)")
+    p.add_argument("--permitir_sobreposicao", action="store_true",
+                   help="Aceita um intervalo de blocos que outro servidor da rede já serve (réplica)")
     p.add_argument("extra", nargs=argparse.REMAINDER, help="Após '--': argumentos extras do run_server")
     return p.parse_args()
 
@@ -118,10 +122,35 @@ def espelhar_saida(proc, arquivo, sessao, ip, porta):
                     anunciado = True
 
 
+def checar_intervalo(args):
+    """Recusa servir camadas que outro servidor aberto deste experimento já serve."""
+    if not args.block_indices:
+        print(f"[{args.no_id}] ⚠️  --num_blocks: o Drift escolhe QUAIS blocos servir e pode rebalancear durante "
+              "o experimento, mudando a cadeia entre consultas. Prefira --block_indices.", flush=True)
+        return
+    try:
+        ini, fim = blocos.ler_intervalo(args.block_indices)
+    except ValueError as e:
+        raise SystemExit(f"❌ {e}. Use INI:FIM, ex.: 0:8")
+    try:
+        r = requests.get(f"{args.api}/sessoes", params={"experimento": args.experimento}, timeout=10)
+        r.raise_for_status()
+        fixos, _ = blocos.ocupados(r.json().get("sessoes", []))
+    except Exception as e:
+        print(f"[{args.no_id}] ⚠️  não foi possível conferir os blocos dos outros servidores: {e}", flush=True)
+        return
+    outros = blocos.sobrepostos(ini, fim, [x for x in fixos if x[2] != args.no_id])
+    if outros and not args.permitir_sobreposicao:
+        raise SystemExit(f"❌ Os blocos {args.block_indices} já são servidos por {', '.join(outros)}. Réplicas criam "
+                         "rotas alternativas e a cadeia muda entre consultas. Escolha outro intervalo ou use "
+                         "--permitir_sobreposicao.")
+
+
 def main():
     args = parse_args()
     specs = specs_mod.coletar_ou_sair(args)
     specs_mod.imprimir(specs)
+    checar_intervalo(args)
 
     n_blocos = numero_blocos(args)
     mem_gb, total_camadas = experimento.estimar_memoria_gb(args.modelo, args.torch_dtype, n_blocos)
@@ -132,7 +161,8 @@ def main():
         args.api, specs, args.experimento, "p2p", "servidor", args.no_id,
         extras={"modelo": args.modelo, "torch_dtype": args.torch_dtype, "num_blocos": n_blocos,
                 "block_indices": args.block_indices, "total_camadas": total_camadas,
-                "bootstrap": args.bootstrap, "comando": cmd},
+                "bootstrap": args.bootstrap, "comando": cmd,
+                "plano_blocos": json.loads(args.plano) if args.plano else None},
     )
 
     proc = None

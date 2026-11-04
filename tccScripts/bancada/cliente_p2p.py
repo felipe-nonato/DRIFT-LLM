@@ -60,11 +60,11 @@ def main():
             args.modelo, initial_peers=[args.initial_peers], torch_dtype=getattr(torch, args.torch_dtype),
         )
 
-        def gerar(ids, max_new_tokens):
+        def gerar(ids, max_new_tokens, streamer=None):
             with torch.inference_mode():
                 return modelo.generate(
                     input_ids=ids, attention_mask=torch.ones_like(ids),
-                    max_new_tokens=max_new_tokens, do_sample=False,
+                    max_new_tokens=max_new_tokens, do_sample=False, streamer=streamer,
                 )
 
         experimento.executar_consultas(sessao, tokenizer, gerar, prompts, args.repeticoes,

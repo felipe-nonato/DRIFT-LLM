@@ -123,6 +123,17 @@ def _progresso(rotulo):
                     extrair=lambda m: f"{m.group(1)}/{m.group(2)}")
 
 
+def _geracao(rotulo):
+    """Tokens da consulta em andamento (impressos por experimento.ContadorTokens)."""
+    return Detector(
+        re.compile(rf"\[{rotulo}\] gerando (\d+)/(\d+) tokens em (\d+)s · consulta (\d+)/(\d+) "
+                   rf"prompt=(\S+) rep=(\d+)"),
+        artefato="geracao",
+        extrair=lambda m: {"tokens": int(m.group(1)), "max": int(m.group(2)), "decorrido_s": int(m.group(3)),
+                           "consulta": int(m.group(4)), "total": int(m.group(5)), "prompt": m.group(6),
+                           "rep": int(m.group(7)), "visto_em": time.time()})
+
+
 PAPEIS = {
     "telemetria": Papel(
         nome="telemetria", modulo="bancada.telemetria", argumentos={},
@@ -133,6 +144,7 @@ PAPEIS = {
         nome="servidor", modulo="bancada.no_p2p", dependencias=("torch", "transformers", "drift"),
         argumentos={**_COMUNS_EXP, **_COMUNS_SPECS, "num_blocks": VALOR, "block_indices": VALOR,
                     "bootstrap": FLAG, "initial_peers": VALOR, "porta": VALOR, "forcar_memoria": FLAG,
+                    "plano": VALOR, "permitir_sobreposicao": FLAG,
                     "session_timeout": VALOR, "step_timeout": VALOR},
         obrigatorios=("api", "experimento", "no_id", "torch_dtype"),
         detectores=(_LINHA_DE_BASE, _OPERANDO, _SPECS,
@@ -143,14 +155,14 @@ PAPEIS = {
         argumentos={**_COMUNS_EXP, **_COMUNS_SPECS, "initial_peers": VALOR, "repeticoes": VALOR,
                     "max_new_tokens": VALOR, "pausa_s": VALOR},
         obrigatorios=("api", "experimento", "initial_peers", "torch_dtype"),
-        detectores=(_LINHA_DE_BASE, _OPERANDO, _SPECS, _progresso("P2P"), _RELATORIO),
+        detectores=(_LINHA_DE_BASE, _OPERANDO, _SPECS, _progresso("P2P"), _geracao("P2P"), _RELATORIO),
     ),
     "centralizado": Papel(
         nome="centralizado", modulo="bancada.centralizado", dependencias=("torch", "transformers"),
         argumentos={**_COMUNS_EXP, **_COMUNS_SPECS, "threads": VALOR, "repeticoes": VALOR,
                     "max_new_tokens": VALOR, "pausa_s": VALOR, "forcar_memoria": FLAG},
         obrigatorios=("api", "experimento", "torch_dtype"),
-        detectores=(_LINHA_DE_BASE, _OPERANDO, _SPECS, _progresso("CENTRAL"), _RELATORIO),
+        detectores=(_LINHA_DE_BASE, _OPERANDO, _SPECS, _progresso("CENTRAL"), _geracao("CENTRAL"), _RELATORIO),
     ),
 }
 
