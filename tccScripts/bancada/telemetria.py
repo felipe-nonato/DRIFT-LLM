@@ -15,8 +15,14 @@ Rotas:
   GET  /sessoes?experimento=X         máquinas registradas
   GET  /sessoes/<id>/intervalos       amostras brutas de uma sessão (exportação para análise)
 
-Os cálculos são refeitos a cada requisição a partir de config_tcc.json: mudar um
-parâmetro não exige repetir experimentos.
+Os cálculos são feitos a partir de config_tcc.json: mudar um parâmetro não exige
+repetir experimentos. O relatório de uma consulta já encerrada fica em cache; o cache
+é descartado quando config_tcc.json muda ou quando chegam amostras atrasadas.
+
+Idempotência (para os nós poderem repetir envios após falha de rede):
+  - POST /sessoes aceita 'sessao_id' proposto pelo nó; repetir devolve a mesma sessão.
+  - POST /consultas aceita 'chave'; repetir com a mesma chave devolve a mesma consulta.
+  - POST /amostras ignora intervalos já gravados (mesma sessão e mesmo t_ini/t_fim).
 
 Uso:  python -m bancada.telemetria            (variáveis: TELEMETRIA_DB, TELEMETRIA_PORTA, TELEMETRIA_CONFIG)
 """
@@ -26,7 +32,9 @@ import http.server
 import io
 import json
 import os
+import re
 import sqlite3
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -38,6 +46,8 @@ from .caminhos import BANCO, garantir_diretorios
 DB_PATH = os.environ.get("TELEMETRIA_DB", str(BANCO))
 PORTA = int(os.environ.get("TELEMETRIA_PORTA", "5000"))
 CONFIG = os.environ.get("TELEMETRIA_CONFIG", str(calculo.CONFIG_PADRAO))
+
+ID_SESSAO = re.compile(r"[0-9a-f]{12}")
 
 SPECS_OBRIGATORIAS = [
     "maquina_id", "hostname", "cpu_modelo", "cpu_nucleos_logicos", "tdp_w", "tdp_fonte",
@@ -104,6 +114,12 @@ def inicializar_banco():
         colunas = {r["name"] for r in c.execute("PRAGMA table_info(sessoes)")}
         if "multiaddr" not in colunas:  # migração de bancos anteriores
             c.execute("ALTER TABLE sessoes ADD COLUMN multiaddr TEXT")
+        colunas = {r["name"] for r in c.execute("PRAGMA table_info(consultas)")}
+        if "chave" not in colunas:  # migração: chave de idempotência das consultas
+            c.execute("ALTER TABLE consultas ADD COLUMN chave TEXT")
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_cons_chave ON consultas(chave)")
+        # linha de base e deduplicação de amostras sem varrer a sessão inteira
+        c.execute("CREATE INDEX IF NOT EXISTS idx_int_sessao_fase ON intervalos(sessao_id, fase, t_ini)")
 
 
 def agora_iso():
@@ -132,8 +148,15 @@ def registrar_sessao(d):
     for k in ("experimento", "papel", "no_id", "inicio"):
         if not d.get(k):
             raise ErroRequisicao(422, f"Campo obrigatório ausente: {k}")
-    sid = uuid.uuid4().hex[:12]
+    sid = d.get("sessao_id") or uuid.uuid4().hex[:12]
+    if not ID_SESSAO.fullmatch(str(sid)):
+        raise ErroRequisicao(422, f"sessao_id inválido: {sid!r} (12 caracteres hexadecimais)")
     with conectar() as c:
+        existente = c.execute("SELECT no_id FROM sessoes WHERE id=?", (sid,)).fetchone()
+        if existente:  # o nó repetiu o registro (a resposta anterior se perdeu)
+            if existente["no_id"] != str(d["no_id"]):
+                raise ErroRequisicao(409, f"sessao_id {sid} já pertence a outro nó.")
+            return {"sessao_id": sid, "repetido": True}
         c.execute(
             """INSERT INTO sessoes (id, experimento, cenario, papel, no_id, maquina_id, hostname, inicio,
                relogio_offset_s, relogio_incerteza_s, specs_json, extras_json, registrado_em)
@@ -154,13 +177,19 @@ def gravar_amostras(d):
     with conectar() as c:
         if not c.execute("SELECT 1 FROM sessoes WHERE id=?", (sid,)).fetchone():
             raise ErroRequisicao(404, f"Sessão inexistente: {sid}")
-        c.executemany(
-            """INSERT INTO intervalos (sessao_id, fase, t_ini, t_fim, cpu_util, e_pkg_j, e_dram_j, bytes_tx, bytes_rx)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            [(sid, i["fase"], i["t_ini"], i["t_fim"], i["cpu_util"], i.get("e_pkg_j"), i.get("e_dram_j"),
-              int(i["bytes_tx"]), int(i["bytes_rx"])) for i in ivs],
-        )
-    return {"status": "ok", "gravados": len(ivs)}
+        gravados = 0
+        for i in ivs:
+            # um lote reenviado (resposta perdida) não pode duplicar energia
+            gravados += c.execute(
+                """INSERT INTO intervalos (sessao_id, fase, t_ini, t_fim, cpu_util, e_pkg_j, e_dram_j, bytes_tx, bytes_rx)
+                   SELECT ?,?,?,?,?,?,?,?,?
+                   WHERE NOT EXISTS (SELECT 1 FROM intervalos WHERE sessao_id=? AND t_fim=? AND t_ini=?)""",
+                (sid, i["fase"], i["t_ini"], i["t_fim"], i["cpu_util"], i.get("e_pkg_j"), i.get("e_dram_j"),
+                 int(i["bytes_tx"]), int(i["bytes_rx"]), sid, i["t_fim"], i["t_ini"]),
+            ).rowcount
+    if ivs and min(i["t_fim"] for i in ivs) < time.time() - ATRASO_MAXIMO_S:
+        cache.invalidar()  # amostras atrasadas podem mudar relatórios já calculados
+    return {"status": "ok", "gravados": gravados, "repetidos": len(ivs) - gravados}
 
 
 def encerrar_sessao(sid, d):
@@ -193,19 +222,30 @@ def registrar_consulta(d):
         raise ErroRequisicao(422, "Campo obrigatório ausente: experimento")
     if not (d.get("t_fim", 0) > d.get("t_inicio", 0)):
         raise ErroRequisicao(422, "Janela inválida (t_fim deve ser maior que t_inicio).")
+    chave = d.get("chave") or None
     with conectar() as c:
+        if chave:
+            existente = c.execute("SELECT id FROM consultas WHERE chave=?", (chave,)).fetchone()
+            if existente:  # o cliente repetiu o envio (a resposta anterior se perdeu)
+                return {"consulta_id": existente["id"], "repetido": True}
         cid = c.execute(
             """INSERT INTO consultas (experimento, cenario, prompt_id, repeticao, t_inicio, t_fim,
-               tokens_entrada, tokens_saida, resposta, extras_json, registrado_em)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+               tokens_entrada, tokens_saida, resposta, extras_json, registrado_em, chave)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (d["experimento"], d["cenario"], d.get("prompt_id"), d.get("repeticao"), d["t_inicio"], d["t_fim"],
              d.get("tokens_entrada"), d.get("tokens_saida"), d.get("resposta"),
-             json.dumps(d.get("extras") or {}, ensure_ascii=False), agora_iso()),
+             json.dumps(d.get("extras") or {}, ensure_ascii=False), agora_iso(), chave),
         ).lastrowid
     return {"consulta_id": cid}
 
 
-def _sessoes_da_janela(c, consulta):
+def _sessoes_da_janela(c, consulta, memo=None):
+    """Sessões que cruzam a janela, com os intervalos da janela e os da linha de base.
+
+    memo guarda, por sessão, a duração máxima de um intervalo e a linha de base: num
+    relatório de experimento elas são lidas uma vez só, não uma vez por consulta.
+    """
+    memo = {} if memo is None else memo
     t0, t1 = consulta["t_inicio"], consulta["t_fim"]
     rows = c.execute(
         "SELECT * FROM sessoes WHERE experimento=? AND cenario=? AND inicio<=? AND (fim IS NULL OR fim>=?)",
@@ -213,40 +253,144 @@ def _sessoes_da_janela(c, consulta):
     ).fetchall()
     sessoes = []
     for s in rows:
+        if s["id"] not in memo:
+            dur_max = c.execute("SELECT MAX(t_fim - t_ini) FROM intervalos WHERE sessao_id=?",
+                                (s["id"],)).fetchone()[0] or 0.0
+            base = c.execute(
+                "SELECT * FROM intervalos WHERE sessao_id=? AND fase='baseline' ORDER BY t_ini", (s["id"],)
+            ).fetchall()
+            memo[s["id"]] = (dur_max, _sem_repetidos(base))
+        dur_max, base = memo[s["id"]]
+        # Todo intervalo que cruza [t0, t1] termina em (t0, t1 + dur_max]: limitar t_fim pelos
+        # dois lados deixa o índice (sessao_id, t_fim) ler só a janela, não o resto da sessão.
         ivs = c.execute(
-            "SELECT * FROM intervalos WHERE sessao_id=? AND t_fim>? AND t_ini<? ORDER BY t_ini",
-            (s["id"], t0, t1),
-        ).fetchall()
-        base = c.execute(
-            "SELECT * FROM intervalos WHERE sessao_id=? AND fase='baseline' ORDER BY t_ini", (s["id"],)
+            "SELECT * FROM intervalos WHERE sessao_id=? AND t_fim>? AND t_fim<=? AND t_ini<? ORDER BY t_ini",
+            (s["id"], t0, t1 + dur_max, t1),
         ).fetchall()
         sessoes.append({
             "id": s["id"], "no_id": s["no_id"], "papel": s["papel"], "inicio": s["inicio"],
             "specs": json.loads(s["specs_json"]),
-            "intervalos": [dict(i) for i in ivs],
-            "intervalos_base": [dict(i) for i in base],
+            "intervalos": _sem_repetidos(ivs),
+            "intervalos_base": base,
         })
     return sessoes
 
 
+def _sem_repetidos(rows):
+    """Bancos antigos podem ter lotes gravados duas vezes (reenvio após falha): conta cada intervalo uma vez."""
+    vistos, saida = set(), []
+    for r in rows:
+        k = (r["t_ini"], r["t_fim"])
+        if k not in vistos:
+            vistos.add(k)
+            saida.append(dict(r))
+    return saida
+
+
+# ---------------------------------------------------------------------------
+# Cache e controle de concorrência dos relatórios
+# ---------------------------------------------------------------------------
+
+ESTAVEL_APOS_S = 120     # consulta encerrada há mais que isso: as amostras dela já chegaram
+ATRASO_MAXIMO_S = 60     # amostras mais velhas que isso chegando = atraso (invalida o cache)
+TTL_EXPERIMENTO_S = 10   # relatório completo reaproveitado por requisições simultâneas
+CALCULOS_SIMULTANEOS = 2  # protege a CPU do nó central (ele também roda blocos do modelo)
+
+
+class CacheRelatorios:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._consultas = {}      # consulta_id -> relatório
+        self._experimentos = {}   # experimento -> (instante, relatório)
+        self._locks_exp = {}
+        self._mtime_config = None
+        self.calculos = threading.BoundedSemaphore(CALCULOS_SIMULTANEOS)
+
+    def _conferir_config(self):
+        try:
+            m = os.path.getmtime(CONFIG)
+        except OSError:
+            m = None
+        if m != self._mtime_config:
+            self._mtime_config = m
+            self._consultas.clear()
+            self._experimentos.clear()
+
+    def invalidar(self):
+        with self._lock:
+            self._consultas.clear()
+            self._experimentos.clear()
+
+    def consulta(self, cid):
+        with self._lock:
+            self._conferir_config()
+            return self._consultas.get(cid)
+
+    def guardar_consulta(self, cid, rel, t_fim):
+        if t_fim < time.time() - ESTAVEL_APOS_S:
+            with self._lock:
+                self._consultas[cid] = rel
+
+    def lock_experimento(self, experimento):
+        with self._lock:
+            return self._locks_exp.setdefault(experimento, threading.Lock())
+
+    def experimento(self, experimento):
+        with self._lock:
+            self._conferir_config()
+            item = self._experimentos.get(experimento)
+            if item and time.time() - item[0] < TTL_EXPERIMENTO_S:
+                return item[1]
+            return None
+
+    def guardar_experimento(self, experimento, rel):
+        with self._lock:
+            self._experimentos[experimento] = (time.time(), rel)
+
+
+cache = CacheRelatorios()
+
+
+def _relatorio_consulta(c, cid, cfg, memo):
+    pronto = cache.consulta(cid)
+    if pronto is not None:
+        return pronto
+    row = c.execute("SELECT * FROM consultas WHERE id=?", (cid,)).fetchone()
+    if not row:
+        raise ErroRequisicao(404, f"Consulta inexistente: {cid}")
+    consulta = dict(row)
+    rel = calculo.relatorio_consulta(consulta, _sessoes_da_janela(c, consulta, memo), cfg)
+    cache.guardar_consulta(cid, rel, consulta["t_fim"])
+    return rel
+
+
 def relatorio_consulta(cid, cfg=None):
+    pronto = cache.consulta(cid)
+    if pronto is not None:
+        return pronto
     cfg = cfg or calculo.carregar_config(CONFIG)
-    with conectar() as c:
-        row = c.execute("SELECT * FROM consultas WHERE id=?", (cid,)).fetchone()
-        if not row:
-            raise ErroRequisicao(404, f"Consulta inexistente: {cid}")
-        consulta = dict(row)
-        sessoes = _sessoes_da_janela(c, consulta)
-    return calculo.relatorio_consulta(consulta, sessoes, cfg)
+    with cache.calculos, conectar() as c:
+        return _relatorio_consulta(c, cid, cfg, {})
 
 
 def relatorio_experimento(experimento):
-    cfg = calculo.carregar_config(CONFIG)
-    with conectar() as c:
-        ids = [r["id"] for r in c.execute(
-            "SELECT id FROM consultas WHERE experimento=? ORDER BY id", (experimento,))]
-    rels = [relatorio_consulta(i, cfg) for i in ids]
-    return {"experimento": experimento, "agregado": calculo.agregar(rels), "consultas": rels}
+    pronto = cache.experimento(experimento)
+    if pronto is not None:
+        return pronto
+    # Um cálculo por experimento por vez: quem chega enquanto ele roda espera e reaproveita.
+    with cache.lock_experimento(experimento):
+        pronto = cache.experimento(experimento)
+        if pronto is not None:
+            return pronto
+        cfg = calculo.carregar_config(CONFIG)
+        with cache.calculos, conectar() as c:
+            ids = [r["id"] for r in c.execute(
+                "SELECT id FROM consultas WHERE experimento=? ORDER BY id", (experimento,))]
+            memo = {}
+            rels = [_relatorio_consulta(c, i, cfg, memo) for i in ids]
+        rel = {"experimento": experimento, "agregado": calculo.agregar(rels), "consultas": rels}
+        cache.guardar_experimento(experimento, rel)
+        return rel
 
 
 COLUNAS_CSV = [
@@ -383,11 +527,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return
 
 
+class ServidorAPI(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 128  # o padrão (5) recusa conexões quando vários nós enviam ao mesmo tempo
+
+
 if __name__ == "__main__":
     calculo.carregar_config(CONFIG)  # falha cedo se a configuração estiver inválida
     garantir_diretorios()
     inicializar_banco()
-    servidor = http.server.ThreadingHTTPServer(("0.0.0.0", PORTA), Handler)
+    servidor = ServidorAPI(("0.0.0.0", PORTA), Handler)
     print(f"[API] Banco: {os.path.abspath(DB_PATH)}")
     print(f"[API] Configuração: {CONFIG}")
     print(f"[API] Ouvindo na porta {PORTA}...", flush=True)

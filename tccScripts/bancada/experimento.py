@@ -9,11 +9,32 @@ mesmo limite de tokens, mesma pausa entre consultas).
 
 import json
 import time
+import uuid
 from pathlib import Path
 
 import requests
 
+from .caminhos import DIR_LOGS
+from .medidor import com_tentativas
+
 DTYPES = {"float32": 4, "bfloat16": 2, "float16": 2}
+
+
+def registrar_consulta(api, corpo):
+    """Envia a janela de uma consulta à API sem risco de perdê-la nem de duplicá-la.
+
+    Antes de enviar, grava uma cópia em dados/logs/consultas_enviadas.jsonl (com a resposta
+    gerada): uma geração de ~45 min não se perde se a API cair. A 'chave' torna o reenvio
+    idempotente — se a primeira resposta da API se perder, a repetição devolve a mesma consulta.
+    """
+    corpo = {**corpo, "chave": corpo.get("chave") or uuid.uuid4().hex}
+    DIR_LOGS.mkdir(parents=True, exist_ok=True)
+    with open(DIR_LOGS / "consultas_enviadas.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps({"api": api, **corpo}, ensure_ascii=False) + "\n")
+    r = com_tentativas(f"registrar consulta {corpo.get('prompt_id')}",
+                       lambda: requests.post(f"{api}/consultas", json=corpo, timeout=30), tentativas=12)
+    r.raise_for_status()
+    return r.json()["consulta_id"]
 
 
 def carregar_prompts(caminho):
@@ -142,7 +163,7 @@ def executar_consultas(sessao, tokenizer, gerar, prompts, repeticoes, max_new_to
             t1 = sessao.relogio.agora()
             n_out = int(saida.shape[1] - ids.shape[1])
             resposta = tokenizer.decode(saida[0, ids.shape[1]:], skip_special_tokens=True)
-            r = requests.post(f"{api}/consultas", json={
+            cid = registrar_consulta(api, {
                 "experimento": sessao.experimento,
                 "cenario": sessao.cenario,
                 "prompt_id": p["id"],
@@ -153,11 +174,10 @@ def executar_consultas(sessao, tokenizer, gerar, prompts, repeticoes, max_new_to
                 "tokens_saida": n_out,
                 "resposta": resposta,
                 "extras": {"max_new_tokens": max_new_tokens, "sessao_cliente": sessao.id},
-            }, timeout=10)
-            r.raise_for_status()
+            })
             feitas += 1
             print(f"[{rotulo}] {feitas}/{total} prompt={p['id']} rep={rep}: {n_out} tokens em {t1 - t0:.1f}s "
-                  f"({n_out / (t1 - t0):.2f} tok/s) → consulta #{r.json()['consulta_id']}")
+                  f"({n_out / (t1 - t0):.2f} tok/s) → consulta #{cid}")
 
     espera = sessao.cfg["lote_envio_s"] * 2 + 2
     print(f"[{rotulo}] Aguardando {espera:.0f}s para as últimas amostras chegarem à API...")

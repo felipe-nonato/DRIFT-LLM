@@ -224,12 +224,12 @@ def main():
                 print(f"[carga-central] Nível {n}: {n} cliente(s) simultâneo(s)...", flush=True)
                 t0, t1, regs = nivel(servidor, relogio, n, plano[n], not args.saida_livre)
                 tok = sum(r["tokens_saida"] for r in regs)
-                cid = requests.post(f"{api}/consultas", json={
+                cid = experimento.registrar_consulta(api, {
                     "experimento": args.experimento, "cenario": "centralizado", "prompt_id": f"carga_n{n:02d}",
                     "repeticao": n, "t_inicio": t0, "t_fim": t1,
                     "tokens_entrada": sum(r["tokens_entrada"] for r in regs), "tokens_saida": tok,
                     "extras": {"tipo": "carga_central", "n_clientes": n, "execucao_id": execucao_id},
-                }, timeout=10).json()["consulta_id"]
+                })
                 janelas.append((n, cid))
                 lat = [r["latencia_s"] for r in regs if r["ok"]]
                 db.executemany(

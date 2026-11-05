@@ -48,6 +48,7 @@ PADRAO_ROTULO = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 MODELO_PADRAO = "Qwen/Qwen2.5-7B-Instruct"
 DTYPE_PADRAO = "bfloat16"
 PORTA_TELEMETRIA = 5000
+CACHE_RELATORIO_S = 20
 PORTA_P2P = 31337
 PAPEIS_LOCAIS = ("telemetria", "servidor", "cliente")
 # "tailscale": todos os PCs conversam pelos IPs do Tailscale (100.64.0.0/10), que se alcançam
@@ -209,6 +210,8 @@ class Rede:
     def __init__(self):
         self.agente = Agente({k: PAPEIS[k] for k in PAPEIS_LOCAIS})
         self._lock = threading.Lock()
+        self._lock_relatorio = threading.Lock()
+        self._relatorio_cache = (0.0, None, None)   # (instante, chave, relatório resumido)
         self.modo = None   # {"tipo": "central"|"membro", "api", "experimento", "modelo", "torch_dtype", ...}
 
     def processo(self, papel):
@@ -428,10 +431,22 @@ class Rede:
     def relatorio(self, csv=False):
         if not self.modo:
             raise ErroHTTP(409, "Nenhuma rede ativa neste PC.")
-        caminho = "/relatorio.csv" if csv else "/relatorio"
-        r = requests.get(f"{self.modo['api']}{caminho}", params={"experimento": self.modo["experimento"]}, timeout=30)
-        r.raise_for_status()
-        return r.text if csv else resumir_relatorio(r.json())
+        api, exp = self.modo["api"], self.modo["experimento"]
+        if csv:  # download explícito: espera o cálculo terminar, por mais longo que seja
+            r = requests.get(f"{api}/relatorio.csv", params={"experimento": exp}, timeout=900)
+            r.raise_for_status()
+            return r.text
+        # Várias abas abertas não multiplicam os cálculos na API: um pedido por vez,
+        # e o resultado vale por alguns segundos para quem chegar depois.
+        with self._lock_relatorio:
+            instante, chave, rel = self._relatorio_cache
+            if chave == (api, exp) and time.time() - instante < CACHE_RELATORIO_S:
+                return rel
+            r = requests.get(f"{api}/relatorio", params={"experimento": exp}, timeout=300)
+            r.raise_for_status()
+            rel = resumir_relatorio(r.json())
+            self._relatorio_cache = (time.time(), (api, exp), rel)
+            return rel
 
 
 # ---------------------------------------------------------------- HTTP

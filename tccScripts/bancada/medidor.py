@@ -19,12 +19,33 @@ medida antes de qualquer carga, e a API deduplica máquinas (maquina_id).
 import json
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import psutil
 import requests
 
 from .caminhos import DIR_LOGS
+
+
+def com_tentativas(descricao, fn, tentativas=8, espera_s=2.0, espera_max_s=30.0):
+    """Repete fn() em falhas de rede/HTTP 5xx com espera crescente. Erros 4xx não são repetidos.
+
+    Só use com operações idempotentes (a API aceita sessao_id/chave para isso).
+    """
+    for n in range(1, tentativas + 1):
+        try:
+            r = fn()
+            if r.status_code < 500:
+                return r
+            erro = f"HTTP {r.status_code}: {r.text[:200]}"
+        except requests.RequestException as e:
+            erro = f"{type(e).__name__}: {e}"
+        if n == tentativas:
+            raise RuntimeError(f"{descricao}: falhou {tentativas} vezes (último erro: {erro})")
+        print(f"[api] ⚠️ {descricao} falhou ({erro}); tentativa {n + 1}/{tentativas} em {espera_s:.0f}s", flush=True)
+        time.sleep(espera_s)
+        espera_s = min(espera_s * 2, espera_max_s)
 
 
 class Relogio:
@@ -39,10 +60,16 @@ class Relogio:
         medidas = []
         for _ in range(rodadas):
             t0 = time.time()
-            r = requests.get(f"{self.api}/tempo", timeout=5)
+            try:
+                r = requests.get(f"{self.api}/tempo", timeout=5)
+                r.raise_for_status()
+            except requests.RequestException:
+                continue  # uma rodada perdida não estraga a sincronização
             t1 = time.time()
-            r.raise_for_status()
             medidas.append((t1 - t0, r.json()["t"] - (t0 + t1) / 2))
+        if not medidas:
+            com_tentativas("sincronizar relógio", lambda: requests.get(f"{self.api}/tempo", timeout=5))
+            return self.sincronizar(rodadas)
         rtt, offset = min(medidas)
         self.offset, self.incerteza_s = offset, rtt / 2
         return self
@@ -144,7 +171,7 @@ class Enviador(threading.Thread):
             r = requests.post(
                 f"{self.api}/amostras",
                 json={"sessao_id": self.sessao_id, "intervalos": lote},
-                timeout=10,
+                timeout=30,  # reenvio é seguro: a API ignora intervalos já gravados
             )
             r.raise_for_status()
             return True
@@ -192,8 +219,11 @@ class SessaoMedida:
         self.relogio.sincronizar()
         print(f"[{self.no_id}] Relógio sincronizado com a API (offset {self.relogio.offset:+.3f}s, "
               f"incerteza ±{self.relogio.incerteza_s * 1000:.1f} ms)")
-        self.cfg = requests.get(f"{self.api}/config", timeout=5).json()["amostragem"]
-        r = requests.post(f"{self.api}/sessoes", json={
+        self.cfg = com_tentativas("ler /config", lambda: requests.get(f"{self.api}/config", timeout=10)
+                                  ).json()["amostragem"]
+        # id gerado aqui: se a resposta se perder, repetir o registro devolve a mesma sessão
+        corpo = {
+            "sessao_id": uuid.uuid4().hex[:12],
             "experimento": self.experimento,
             "cenario": self.cenario,
             "papel": self.papel,
@@ -203,7 +233,8 @@ class SessaoMedida:
             "relogio_incerteza_s": self.relogio.incerteza_s,
             "specs": self.specs,
             "extras": self.extras,
-        }, timeout=10)
+        }
+        r = com_tentativas("registrar sessão", lambda: requests.post(f"{self.api}/sessoes", json=corpo, timeout=30))
         if r.status_code != 200:
             raise SystemExit(f"[{self.no_id}] ❌ API recusou o registro: {r.text}")
         self.id = r.json()["sessao_id"]
@@ -228,8 +259,9 @@ class SessaoMedida:
             self.enviador.parar()
         if self.id:
             try:
-                requests.post(f"{self.api}/sessoes/{self.id}/encerrar",
-                              json={"fim": self.relogio.agora(), "motivo": motivo}, timeout=10)
+                corpo = {"fim": self.relogio.agora(), "motivo": motivo}
+                com_tentativas("encerrar sessão", lambda: requests.post(
+                    f"{self.api}/sessoes/{self.id}/encerrar", json=corpo, timeout=30), tentativas=4)
             except Exception as e:
                 print(f"[{self.no_id}] ⚠️ não foi possível registrar o encerramento: {e}")
         print(f"[{self.no_id}] Sessão encerrada ({motivo}). Backup local em logs/amostras_{self.id}.jsonl")

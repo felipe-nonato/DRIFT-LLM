@@ -19,7 +19,7 @@ def resumir_relatorio(rel):
 
 class Monitor(threading.Thread):
     def __init__(self, config, agentes, telemetria, barramento, experimento_atual, intervalo_s=1.5,
-                 intervalo_relatorio_s=5.0):
+                 intervalo_relatorio_s=30.0):
         super().__init__(daemon=True)
         self.config, self.agentes, self.telemetria, self.barramento = config, agentes, telemetria, barramento
         self.experimento_atual = experimento_atual   # função -> nome do experimento exibido

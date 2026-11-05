@@ -205,15 +205,13 @@ class Carga:
 
 
 def registrar_janela(api, experimento_, n, t0, t1, regs, execucao_id):
-    r = requests.post(f"{api}/consultas", json={
+    return experimento.registrar_consulta(api, {
         "experimento": experimento_, "cenario": "p2p", "prompt_id": f"carga_n{n:02d}", "repeticao": n,
         "t_inicio": t0, "t_fim": t1,
         "tokens_entrada": sum(x["tokens_entrada"] for x in regs),
         "tokens_saida": sum(x["tokens_saida"] for x in regs),
         "extras": {"tipo": "teste_carga", "n_clientes": n, "execucao_id": execucao_id},
-    }, timeout=10)
-    r.raise_for_status()
-    return r.json()["consulta_id"]
+    })
 
 
 def main():

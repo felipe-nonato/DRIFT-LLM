@@ -257,9 +257,10 @@ def coletar(args):
 
     cfg = calculo.carregar_config(telemetria.CONFIG)
     concluidas = []
+    memo = {}
     for r in con.execute("SELECT * FROM consultas WHERE experimento=? ORDER BY id", (exp,)):
         c = dict(r)
-        rel = calculo.relatorio_consulta(c, telemetria._sessoes_da_janela(con, c), cfg)
+        rel = calculo.relatorio_consulta(c, telemetria._sessoes_da_janela(con, c, memo), cfg)
         concluidas.append({
             "id": c["id"], "cenario": c["cenario"], "prompt_id": c["prompt_id"], "repeticao": c["repeticao"],
             "t_inicio": c["t_inicio"], "t_fim": c["t_fim"], "duracao_s": c["t_fim"] - c["t_inicio"],

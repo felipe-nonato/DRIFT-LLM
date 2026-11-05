@@ -19,7 +19,11 @@ const INDICADORES = [
 ];
 
 const st = { estado: null, tela: null, camadas: 28, logPapel: "servidor", logSeq: {}, logLinhas: {}, cenario: "p2p",
-             relatorio: null, ultimoRelatorio: 0 };
+             relatorio: null, ultimoRelatorio: 0, ultimosMembros: 0, relatorioPendente: false };
+// O relatório é calculado na API do nó central (que também roda blocos do modelo):
+// pedir com folga e nunca empilhar pedidos.
+const INTERVALO_RELATORIO_MS = 30000;
+const INTERVALO_MEMBROS_MS = 5000;
 
 async function api(caminho, corpo) {
   const opcoes = corpo === undefined ? {} : { method: "POST", body: JSON.stringify(corpo) };
@@ -248,8 +252,12 @@ async function renderMembros() {
 }
 
 async function renderRelatorio() {
+  if (st.relatorioPendente) return;
+  st.relatorioPendente = true;
   let r;
-  try { r = await api("/api/relatorio"); } catch (err) { $("subResultados").textContent = err.message; return; }
+  try { r = await api("/api/relatorio"); }
+  catch (err) { $("subResultados").textContent = err.message; return; }
+  finally { st.relatorioPendente = false; st.ultimoRelatorio = Date.now(); }
   st.relatorio = r;
   const cenarios = Object.keys(r.agregado || {});
   if (cenarios.length && !cenarios.includes(st.cenario)) st.cenario = cenarios[0];
@@ -293,9 +301,12 @@ async function atualizar() {
     render();
     if (st.tela === "ativo") {
       await atualizarLogs();
-      if (Date.now() - st.ultimoRelatorio > 5000) {
-        st.ultimoRelatorio = Date.now();
+      if (Date.now() - st.ultimosMembros > INTERVALO_MEMBROS_MS) {
+        st.ultimosMembros = Date.now();
         renderMembros();
+      }
+      if (!st.relatorioPendente && Date.now() - st.ultimoRelatorio > INTERVALO_RELATORIO_MS) {
+        st.ultimoRelatorio = Date.now();
         renderRelatorio();
       }
     }
